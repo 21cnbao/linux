@@ -1,0 +1,7 @@
+config LDDD3_GLOBALFIFO
+	tristate "LDDD3 globalfifo driver example"
+	default m
+	---help---
+	  LDDD3 globalfifo driver example. This device provides a in-kernel
+	  4KB page as a FIFO which userspace app can use it as one IPC.
+

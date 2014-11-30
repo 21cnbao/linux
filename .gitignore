@@ -95,3 +95,11 @@ x509.genkey
 
 # Kconfig presets
 all.config
+
+#
+# LDDD3 zimage/dtb/vexpress
+#
+extra/vexpress.img
+extra/zImage
+extra/vexpress-v2p-ca9.dtb
+extra/img

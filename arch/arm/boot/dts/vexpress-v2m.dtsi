@@ -110,6 +110,12 @@
 				#address-cells = <1>;
 				#size-cells = <0>;
 
+				/* LDDD3: add a i2c client - ds1388 rtc */
+				eeprom@68 {
+					compatible = "dallas,ds1338";
+					reg = <0x68>;
+				};
+
 				pcie-switch@60 {
 					compatible = "idt,89hpes32h8";
 					reg = <0x60>;

@@ -1,0 +1,7 @@
+config LDDD3_GLOBALMEM
+	tristate "LDDD3 globalmem driver example"
+	default m
+	---help---
+	  LDDD3 globalmem driver example. This device provides a in-kernel
+	  4KB page for reading/writing from userspace app by vfs interface.
+

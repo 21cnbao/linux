@@ -77,6 +77,7 @@ struct ct_desc {
 	void			(*init_early)(void);
 	void			(*init_irq)(void);
 	void			(*init_tile)(void);
+	void			(*bus_notifer)(void);
 #ifdef CONFIG_SMP
 	void			(*init_cpu_map)(void);
 	void			(*smp_enable)(unsigned int);
