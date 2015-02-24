@@ -37,14 +37,37 @@ struct panel_desc {
 	const struct drm_display_mode *modes;
 	unsigned int num_modes;
 
+	unsigned int bpc;
+
 	struct {
 		unsigned int width;
 		unsigned int height;
 	} size;
+
+	/**
+	 * @prepare: the time (in milliseconds) that it takes for the panel to
+	 *           become ready and start receiving video data
+	 * @enable: the time (in milliseconds) that it takes for the panel to
+	 *          display the first valid frame after starting to receive
+	 *          video data
+	 * @disable: the time (in milliseconds) that it takes for the panel to
+	 *           turn the display off (no content is visible)
+	 * @unprepare: the time (in milliseconds) that it takes for the panel
+	 *             to power itself down completely
+	 */
+	struct {
+		unsigned int prepare;
+		unsigned int enable;
+		unsigned int disable;
+		unsigned int unprepare;
+	} delay;
+
+	u32 bus_format;
 };
 
 struct panel_simple {
 	struct drm_panel base;
+	bool prepared;
 	bool enabled;
 
 	const struct panel_desc *desc;
@@ -87,8 +110,12 @@ static int panel_simple_get_fixed_modes(struct panel_simple *panel)
 		num++;
 	}
 
+	connector->display_info.bpc = panel->desc->bpc;
 	connector->display_info.width_mm = panel->desc->size.width;
 	connector->display_info.height_mm = panel->desc->size.height;
+	if (panel->desc->bus_format)
+		drm_display_info_set_bus_formats(&connector->display_info,
+						 &panel->desc->bus_format, 1);
 
 	return num;
 }
@@ -105,21 +132,40 @@ static int panel_simple_disable(struct drm_panel *panel)
 		backlight_update_status(p->backlight);
 	}
 
-	if (p->enable_gpio)
-		gpiod_set_value_cansleep(p->enable_gpio, 0);
+	if (p->desc->delay.disable)
+		msleep(p->desc->delay.disable);
 
-	regulator_disable(p->supply);
 	p->enabled = false;
 
 	return 0;
 }
 
-static int panel_simple_enable(struct drm_panel *panel)
+static int panel_simple_unprepare(struct drm_panel *panel)
+{
+	struct panel_simple *p = to_panel_simple(panel);
+
+	if (!p->prepared)
+		return 0;
+
+	if (p->enable_gpio)
+		gpiod_set_value_cansleep(p->enable_gpio, 0);
+
+	regulator_disable(p->supply);
+
+	if (p->desc->delay.unprepare)
+		msleep(p->desc->delay.unprepare);
+
+	p->prepared = false;
+
+	return 0;
+}
+
+static int panel_simple_prepare(struct drm_panel *panel)
 {
 	struct panel_simple *p = to_panel_simple(panel);
 	int err;
 
-	if (p->enabled)
+	if (p->prepared)
 		return 0;
 
 	err = regulator_enable(p->supply);
@@ -130,6 +176,24 @@ static int panel_simple_enable(struct drm_panel *panel)
 
 	if (p->enable_gpio)
 		gpiod_set_value_cansleep(p->enable_gpio, 1);
+
+	if (p->desc->delay.prepare)
+		msleep(p->desc->delay.prepare);
+
+	p->prepared = true;
+
+	return 0;
+}
+
+static int panel_simple_enable(struct drm_panel *panel)
+{
+	struct panel_simple *p = to_panel_simple(panel);
+
+	if (p->enabled)
+		return 0;
+
+	if (p->desc->delay.enable)
+		msleep(p->desc->delay.enable);
 
 	if (p->backlight) {
 		p->backlight->props.power = FB_BLANK_UNBLANK;
@@ -164,6 +228,8 @@ static int panel_simple_get_modes(struct drm_panel *panel)
 
 static const struct drm_panel_funcs panel_simple_funcs = {
 	.disable = panel_simple_disable,
+	.unprepare = panel_simple_unprepare,
+	.prepare = panel_simple_prepare,
 	.enable = panel_simple_enable,
 	.get_modes = panel_simple_get_modes,
 };
@@ -179,27 +245,19 @@ static int panel_simple_probe(struct device *dev, const struct panel_desc *desc)
 		return -ENOMEM;
 
 	panel->enabled = false;
+	panel->prepared = false;
 	panel->desc = desc;
 
 	panel->supply = devm_regulator_get(dev, "power");
 	if (IS_ERR(panel->supply))
 		return PTR_ERR(panel->supply);
 
-	panel->enable_gpio = devm_gpiod_get(dev, "enable");
+	panel->enable_gpio = devm_gpiod_get_optional(dev, "enable",
+						     GPIOD_OUT_LOW);
 	if (IS_ERR(panel->enable_gpio)) {
 		err = PTR_ERR(panel->enable_gpio);
-		if (err != -ENOENT) {
-			dev_err(dev, "failed to request GPIO: %d\n", err);
-			return err;
-		}
-
-		panel->enable_gpio = NULL;
-	} else {
-		err = gpiod_direction_output(panel->enable_gpio, 0);
-		if (err < 0) {
-			dev_err(dev, "failed to setup GPIO: %d\n", err);
-			return err;
-		}
+		dev_err(dev, "failed to request GPIO: %d\n", err);
+		return err;
 	}
 
 	backlight = of_parse_phandle(dev->of_node, "backlight", 0);
@@ -285,9 +343,57 @@ static const struct drm_display_mode auo_b101aw03_mode = {
 static const struct panel_desc auo_b101aw03 = {
 	.modes = &auo_b101aw03_mode,
 	.num_modes = 1,
+	.bpc = 6,
 	.size = {
 		.width = 223,
 		.height = 125,
+	},
+};
+
+static const struct drm_display_mode auo_b101xtn01_mode = {
+	.clock = 72000,
+	.hdisplay = 1366,
+	.hsync_start = 1366 + 20,
+	.hsync_end = 1366 + 20 + 70,
+	.htotal = 1366 + 20 + 70,
+	.vdisplay = 768,
+	.vsync_start = 768 + 14,
+	.vsync_end = 768 + 14 + 42,
+	.vtotal = 768 + 14 + 42,
+	.vrefresh = 60,
+	.flags = DRM_MODE_FLAG_NVSYNC | DRM_MODE_FLAG_NHSYNC,
+};
+
+static const struct panel_desc auo_b101xtn01 = {
+	.modes = &auo_b101xtn01_mode,
+	.num_modes = 1,
+	.bpc = 6,
+	.size = {
+		.width = 223,
+		.height = 125,
+	},
+};
+
+static const struct drm_display_mode auo_b116xw03_mode = {
+	.clock = 70589,
+	.hdisplay = 1366,
+	.hsync_start = 1366 + 40,
+	.hsync_end = 1366 + 40 + 40,
+	.htotal = 1366 + 40 + 40 + 32,
+	.vdisplay = 768,
+	.vsync_start = 768 + 10,
+	.vsync_end = 768 + 10 + 12,
+	.vtotal = 768 + 10 + 12 + 6,
+	.vrefresh = 60,
+};
+
+static const struct panel_desc auo_b116xw03 = {
+	.modes = &auo_b116xw03_mode,
+	.num_modes = 1,
+	.bpc = 6,
+	.size = {
+		.width = 256,
+		.height = 144,
 	},
 };
 
@@ -307,9 +413,66 @@ static const struct drm_display_mode auo_b133xtn01_mode = {
 static const struct panel_desc auo_b133xtn01 = {
 	.modes = &auo_b133xtn01_mode,
 	.num_modes = 1,
+	.bpc = 6,
 	.size = {
 		.width = 293,
 		.height = 165,
+	},
+};
+
+static const struct drm_display_mode auo_b133htn01_mode = {
+	.clock = 150660,
+	.hdisplay = 1920,
+	.hsync_start = 1920 + 172,
+	.hsync_end = 1920 + 172 + 80,
+	.htotal = 1920 + 172 + 80 + 60,
+	.vdisplay = 1080,
+	.vsync_start = 1080 + 25,
+	.vsync_end = 1080 + 25 + 10,
+	.vtotal = 1080 + 25 + 10 + 10,
+	.vrefresh = 60,
+};
+
+static const struct panel_desc auo_b133htn01 = {
+	.modes = &auo_b133htn01_mode,
+	.num_modes = 1,
+	.bpc = 6,
+	.size = {
+		.width = 293,
+		.height = 165,
+	},
+	.delay = {
+		.prepare = 105,
+		.enable = 20,
+		.unprepare = 50,
+	},
+};
+
+static const struct drm_display_mode avic_tm070ddh03_mode = {
+	.clock = 51200,
+	.hdisplay = 1024,
+	.hsync_start = 1024 + 160,
+	.hsync_end = 1024 + 160 + 4,
+	.htotal = 1024 + 160 + 4 + 156,
+	.vdisplay = 600,
+	.vsync_start = 600 + 17,
+	.vsync_end = 600 + 17 + 1,
+	.vtotal = 600 + 17 + 1 + 17,
+	.vrefresh = 60,
+};
+
+static const struct panel_desc avic_tm070ddh03 = {
+	.modes = &avic_tm070ddh03_mode,
+	.num_modes = 1,
+	.bpc = 8,
+	.size = {
+		.width = 154,
+		.height = 90,
+	},
+	.delay = {
+		.prepare = 20,
+		.enable = 200,
+		.disable = 200,
 	},
 };
 
@@ -329,6 +492,7 @@ static const struct drm_display_mode chunghwa_claa101wa01a_mode = {
 static const struct panel_desc chunghwa_claa101wa01a = {
 	.modes = &chunghwa_claa101wa01a_mode,
 	.num_modes = 1,
+	.bpc = 6,
 	.size = {
 		.width = 220,
 		.height = 120,
@@ -351,6 +515,7 @@ static const struct drm_display_mode chunghwa_claa101wb01_mode = {
 static const struct panel_desc chunghwa_claa101wb01 = {
 	.modes = &chunghwa_claa101wb01_mode,
 	.num_modes = 1,
+	.bpc = 6,
 	.size = {
 		.width = 223,
 		.height = 125,
@@ -374,6 +539,7 @@ static const struct drm_display_mode edt_et057090dhu_mode = {
 static const struct panel_desc edt_et057090dhu = {
 	.modes = &edt_et057090dhu_mode,
 	.num_modes = 1,
+	.bpc = 6,
 	.size = {
 		.width = 115,
 		.height = 86,
@@ -397,9 +563,173 @@ static const struct drm_display_mode edt_etm0700g0dh6_mode = {
 static const struct panel_desc edt_etm0700g0dh6 = {
 	.modes = &edt_etm0700g0dh6_mode,
 	.num_modes = 1,
+	.bpc = 6,
 	.size = {
 		.width = 152,
 		.height = 91,
+	},
+};
+
+static const struct drm_display_mode foxlink_fl500wvr00_a0t_mode = {
+	.clock = 32260,
+	.hdisplay = 800,
+	.hsync_start = 800 + 168,
+	.hsync_end = 800 + 168 + 64,
+	.htotal = 800 + 168 + 64 + 88,
+	.vdisplay = 480,
+	.vsync_start = 480 + 37,
+	.vsync_end = 480 + 37 + 2,
+	.vtotal = 480 + 37 + 2 + 8,
+	.vrefresh = 60,
+};
+
+static const struct panel_desc foxlink_fl500wvr00_a0t = {
+	.modes = &foxlink_fl500wvr00_a0t_mode,
+	.num_modes = 1,
+	.bpc = 8,
+	.size = {
+		.width = 108,
+		.height = 65,
+	},
+	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
+};
+
+static const struct drm_display_mode giantplus_gpg482739qs5_mode = {
+	.clock = 9000,
+	.hdisplay = 480,
+	.hsync_start = 480 + 5,
+	.hsync_end = 480 + 5 + 1,
+	.htotal = 480 + 5 + 1 + 40,
+	.vdisplay = 272,
+	.vsync_start = 272 + 8,
+	.vsync_end = 272 + 8 + 1,
+	.vtotal = 272 + 8 + 1 + 8,
+	.vrefresh = 60,
+};
+
+static const struct panel_desc giantplus_gpg482739qs5 = {
+	.modes = &giantplus_gpg482739qs5_mode,
+	.num_modes = 1,
+	.bpc = 8,
+	.size = {
+		.width = 95,
+		.height = 54,
+	},
+};
+
+static const struct drm_display_mode hannstar_hsd070pww1_mode = {
+	.clock = 71100,
+	.hdisplay = 1280,
+	.hsync_start = 1280 + 1,
+	.hsync_end = 1280 + 1 + 158,
+	.htotal = 1280 + 1 + 158 + 1,
+	.vdisplay = 800,
+	.vsync_start = 800 + 1,
+	.vsync_end = 800 + 1 + 21,
+	.vtotal = 800 + 1 + 21 + 1,
+	.vrefresh = 60,
+};
+
+static const struct panel_desc hannstar_hsd070pww1 = {
+	.modes = &hannstar_hsd070pww1_mode,
+	.num_modes = 1,
+	.bpc = 6,
+	.size = {
+		.width = 151,
+		.height = 94,
+	},
+};
+
+static const struct drm_display_mode hitachi_tx23d38vm0caa_mode = {
+	.clock = 33333,
+	.hdisplay = 800,
+	.hsync_start = 800 + 85,
+	.hsync_end = 800 + 85 + 86,
+	.htotal = 800 + 85 + 86 + 85,
+	.vdisplay = 480,
+	.vsync_start = 480 + 16,
+	.vsync_end = 480 + 16 + 13,
+	.vtotal = 480 + 16 + 13 + 16,
+	.vrefresh = 60,
+};
+
+static const struct panel_desc hitachi_tx23d38vm0caa = {
+	.modes = &hitachi_tx23d38vm0caa_mode,
+	.num_modes = 1,
+	.bpc = 6,
+	.size = {
+		.width = 195,
+		.height = 117,
+	},
+};
+
+static const struct drm_display_mode innolux_g121i1_l01_mode = {
+	.clock = 71000,
+	.hdisplay = 1280,
+	.hsync_start = 1280 + 64,
+	.hsync_end = 1280 + 64 + 32,
+	.htotal = 1280 + 64 + 32 + 64,
+	.vdisplay = 800,
+	.vsync_start = 800 + 9,
+	.vsync_end = 800 + 9 + 6,
+	.vtotal = 800 + 9 + 6 + 9,
+	.vrefresh = 60,
+};
+
+static const struct panel_desc innolux_g121i1_l01 = {
+	.modes = &innolux_g121i1_l01_mode,
+	.num_modes = 1,
+	.bpc = 6,
+	.size = {
+		.width = 261,
+		.height = 163,
+	},
+};
+
+static const struct drm_display_mode innolux_n116bge_mode = {
+	.clock = 76420,
+	.hdisplay = 1366,
+	.hsync_start = 1366 + 136,
+	.hsync_end = 1366 + 136 + 30,
+	.htotal = 1366 + 136 + 30 + 60,
+	.vdisplay = 768,
+	.vsync_start = 768 + 8,
+	.vsync_end = 768 + 8 + 12,
+	.vtotal = 768 + 8 + 12 + 12,
+	.vrefresh = 60,
+	.flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
+};
+
+static const struct panel_desc innolux_n116bge = {
+	.modes = &innolux_n116bge_mode,
+	.num_modes = 1,
+	.bpc = 6,
+	.size = {
+		.width = 256,
+		.height = 144,
+	},
+};
+
+static const struct drm_display_mode innolux_n156bge_l21_mode = {
+	.clock = 69300,
+	.hdisplay = 1366,
+	.hsync_start = 1366 + 16,
+	.hsync_end = 1366 + 16 + 34,
+	.htotal = 1366 + 16 + 34 + 50,
+	.vdisplay = 768,
+	.vsync_start = 768 + 2,
+	.vsync_end = 768 + 2 + 6,
+	.vtotal = 768 + 2 + 6 + 12,
+	.vrefresh = 60,
+};
+
+static const struct panel_desc innolux_n156bge_l21 = {
+	.modes = &innolux_n156bge_l21_mode,
+	.num_modes = 1,
+	.bpc = 6,
+	.size = {
+		.width = 344,
+		.height = 193,
 	},
 };
 
@@ -419,6 +749,7 @@ static const struct drm_display_mode lg_lp129qe_mode = {
 static const struct panel_desc lg_lp129qe = {
 	.modes = &lg_lp129qe_mode,
 	.num_modes = 1,
+	.bpc = 8,
 	.size = {
 		.width = 272,
 		.height = 181,
@@ -441,6 +772,7 @@ static const struct drm_display_mode samsung_ltn101nt05_mode = {
 static const struct panel_desc samsung_ltn101nt05 = {
 	.modes = &samsung_ltn101nt05_mode,
 	.num_modes = 1,
+	.bpc = 6,
 	.size = {
 		.width = 1024,
 		.height = 600,
@@ -452,8 +784,20 @@ static const struct of_device_id platform_of_match[] = {
 		.compatible = "auo,b101aw03",
 		.data = &auo_b101aw03,
 	}, {
+		.compatible = "auo,b101xtn01",
+		.data = &auo_b101xtn01,
+	}, {
+		.compatible = "auo,b116xw03",
+		.data = &auo_b116xw03,
+	}, {
+		.compatible = "auo,b133htn01",
+		.data = &auo_b133htn01,
+	}, {
 		.compatible = "auo,b133xtn01",
 		.data = &auo_b133xtn01,
+	}, {
+		.compatible = "avic,tm070ddh03",
+		.data = &avic_tm070ddh03,
 	}, {
 		.compatible = "chunghwa,claa101wa01a",
 		.data = &chunghwa_claa101wa01a
@@ -470,13 +814,32 @@ static const struct of_device_id platform_of_match[] = {
 		.compatible = "edt,etm0700g0dh6",
 		.data = &edt_etm0700g0dh6,
 	}, {
+		.compatible = "foxlink,fl500wvr00-a0t",
+		.data = &foxlink_fl500wvr00_a0t,
+	}, {
+		.compatible = "giantplus,gpg482739qs5",
+		.data = &giantplus_gpg482739qs5
+	}, {
+		.compatible = "hannstar,hsd070pww1",
+		.data = &hannstar_hsd070pww1,
+	}, {
+		.compatible = "hit,tx23d38vm0caa",
+		.data = &hitachi_tx23d38vm0caa
+	}, {
+		.compatible ="innolux,g121i1-l01",
+		.data = &innolux_g121i1_l01
+	}, {
+		.compatible = "innolux,n116bge",
+		.data = &innolux_n116bge,
+	}, {
+		.compatible = "innolux,n156bge-l21",
+		.data = &innolux_n156bge_l21,
+	}, {
 		.compatible = "lg,lp129qe",
 		.data = &lg_lp129qe,
 	}, {
 		.compatible = "samsung,ltn101nt05",
 		.data = &samsung_ltn101nt05,
-	}, {
-		.compatible = "simple-panel",
 	}, {
 		/* sentinel */
 	}
@@ -507,7 +870,6 @@ static void panel_simple_platform_shutdown(struct platform_device *pdev)
 static struct platform_driver panel_simple_platform_driver = {
 	.driver = {
 		.name = "panel-simple",
-		.owner = THIS_MODULE,
 		.of_match_table = platform_of_match,
 	},
 	.probe = panel_simple_platform_probe,
@@ -540,12 +902,13 @@ static const struct panel_desc_dsi lg_ld070wx3_sl01 = {
 	.desc = {
 		.modes = &lg_ld070wx3_sl01_mode,
 		.num_modes = 1,
+		.bpc = 8,
 		.size = {
 			.width = 94,
 			.height = 151,
 		},
 	},
-	.flags = MIPI_DSI_MODE_VIDEO,
+	.flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
 	.format = MIPI_DSI_FMT_RGB888,
 	.lanes = 4,
 };
@@ -567,6 +930,7 @@ static const struct panel_desc_dsi lg_lh500wx1_sd03 = {
 	.desc = {
 		.modes = &lg_lh500wx1_sd03_mode,
 		.num_modes = 1,
+		.bpc = 8,
 		.size = {
 			.width = 62,
 			.height = 110,
@@ -594,12 +958,14 @@ static const struct panel_desc_dsi panasonic_vvx10f004b00 = {
 	.desc = {
 		.modes = &panasonic_vvx10f004b00_mode,
 		.num_modes = 1,
+		.bpc = 8,
 		.size = {
 			.width = 217,
 			.height = 136,
 		},
 	},
-	.flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE,
+	.flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
+		 MIPI_DSI_CLOCK_NON_CONTINUOUS,
 	.format = MIPI_DSI_FMT_RGB888,
 	.lanes = 4,
 };
@@ -662,7 +1028,6 @@ static void panel_simple_dsi_shutdown(struct mipi_dsi_device *dsi)
 static struct mipi_dsi_driver panel_simple_dsi_driver = {
 	.driver = {
 		.name = "panel-simple-dsi",
-		.owner = THIS_MODULE,
 		.of_match_table = dsi_of_match,
 	},
 	.probe = panel_simple_dsi_probe,

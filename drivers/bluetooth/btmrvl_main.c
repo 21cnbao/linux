@@ -22,6 +22,7 @@
 #include <linux/of.h>
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
+#include <linux/mmc/sdio_func.h>
 
 #include "btmrvl_drv.h"
 #include "btmrvl_sdio.h"
@@ -40,6 +41,11 @@ void btmrvl_interrupt(struct btmrvl_private *priv)
 	priv->adapter->wakeup_tries = 0;
 
 	priv->adapter->int_count++;
+
+	if (priv->adapter->hs_state == HS_ACTIVATED) {
+		BT_DBG("BT: HS DEACTIVATED in ISR!");
+		priv->adapter->hs_state = HS_DEACTIVATED;
+	}
 
 	wake_up_interruptible(&priv->main_thread.wait_q);
 }
@@ -114,6 +120,7 @@ int btmrvl_process_event(struct btmrvl_private *priv, struct sk_buff *skb)
 			adapter->hs_state = HS_ACTIVATED;
 			if (adapter->psmode)
 				adapter->ps_state = PS_SLEEP;
+			wake_up_interruptible(&adapter->event_hs_wait_q);
 			BT_DBG("HS ACTIVATED!");
 		} else {
 			BT_DBG("HS Enable failed");
@@ -171,6 +178,11 @@ static int btmrvl_send_sync_cmd(struct btmrvl_private *priv, u16 opcode,
 	struct sk_buff *skb;
 	struct hci_command_hdr *hdr;
 
+	if (priv->surprise_removed) {
+		BT_ERR("Card is removed");
+		return -EFAULT;
+	}
+
 	skb = bt_skb_alloc(HCI_COMMAND_HDR_SIZE + len, GFP_ATOMIC);
 	if (skb == NULL) {
 		BT_ERR("No free skb");
@@ -195,9 +207,13 @@ static int btmrvl_send_sync_cmd(struct btmrvl_private *priv, u16 opcode,
 	wake_up_interruptible(&priv->main_thread.wait_q);
 
 	if (!wait_event_interruptible_timeout(priv->adapter->cmd_wait_q,
-				priv->adapter->cmd_complete,
-				msecs_to_jiffies(WAIT_UNTIL_CMD_RESP)))
+					      priv->adapter->cmd_complete ||
+					      priv->surprise_removed,
+					      WAIT_UNTIL_CMD_RESP))
 		return -ETIMEDOUT;
+
+	if (priv->surprise_removed)
+		return -EFAULT;
 
 	return 0;
 }
@@ -208,11 +224,28 @@ int btmrvl_send_module_cfg_cmd(struct btmrvl_private *priv, u8 subcmd)
 
 	ret = btmrvl_send_sync_cmd(priv, BT_CMD_MODULE_CFG_REQ, &subcmd, 1);
 	if (ret)
-		BT_ERR("module_cfg_cmd(%x) failed\n", subcmd);
+		BT_ERR("module_cfg_cmd(%x) failed", subcmd);
 
 	return ret;
 }
 EXPORT_SYMBOL_GPL(btmrvl_send_module_cfg_cmd);
+
+int btmrvl_pscan_window_reporting(struct btmrvl_private *priv, u8 subcmd)
+{
+	struct btmrvl_sdio_card *card = priv->btmrvl_dev.card;
+	int ret;
+
+	if (!card->support_pscan_win_report)
+		return 0;
+
+	ret = btmrvl_send_sync_cmd(priv, BT_CMD_PSCAN_WIN_REPORT_ENABLE,
+				   &subcmd, 1);
+	if (ret)
+		BT_ERR("PSCAN_WIN_REPORT_ENABLE command failed: %#x", ret);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(btmrvl_pscan_window_reporting);
 
 int btmrvl_send_hscfg_cmd(struct btmrvl_private *priv)
 {
@@ -227,7 +260,7 @@ int btmrvl_send_hscfg_cmd(struct btmrvl_private *priv)
 
 	ret = btmrvl_send_sync_cmd(priv, BT_CMD_HOST_SLEEP_CONFIG, param, 2);
 	if (ret)
-		BT_ERR("HSCFG command failed\n");
+		BT_ERR("HSCFG command failed");
 
 	return ret;
 }
@@ -245,7 +278,7 @@ int btmrvl_enable_ps(struct btmrvl_private *priv)
 
 	ret = btmrvl_send_sync_cmd(priv, BT_CMD_AUTO_SLEEP_MODE, &param, 1);
 	if (ret)
-		BT_ERR("PSMODE command failed\n");
+		BT_ERR("PSMODE command failed");
 
 	return 0;
 }
@@ -253,11 +286,32 @@ EXPORT_SYMBOL_GPL(btmrvl_enable_ps);
 
 int btmrvl_enable_hs(struct btmrvl_private *priv)
 {
+	struct btmrvl_adapter *adapter = priv->adapter;
 	int ret;
 
 	ret = btmrvl_send_sync_cmd(priv, BT_CMD_HOST_SLEEP_ENABLE, NULL, 0);
-	if (ret)
-		BT_ERR("Host sleep enable command failed\n");
+	if (ret) {
+		BT_ERR("Host sleep enable command failed");
+		return ret;
+	}
+
+	ret = wait_event_interruptible_timeout(adapter->event_hs_wait_q,
+					       adapter->hs_state ||
+					       priv->surprise_removed,
+					       WAIT_UNTIL_HS_STATE_CHANGED);
+	if (ret < 0 || priv->surprise_removed) {
+		BT_ERR("event_hs_wait_q terminated (%d): %d,%d,%d",
+		       ret, adapter->hs_state, adapter->ps_state,
+		       adapter->wakeup_tries);
+	} else if (!ret) {
+		BT_ERR("hs_enable timeout: %d,%d,%d", adapter->hs_state,
+		       adapter->ps_state, adapter->wakeup_tries);
+		ret = -ETIMEDOUT;
+	} else {
+		BT_DBG("host sleep enabled: %d,%d,%d", adapter->hs_state,
+		       adapter->ps_state, adapter->wakeup_tries);
+		ret = 0;
+	}
 
 	return ret;
 }
@@ -285,10 +339,17 @@ int btmrvl_prepare_command(struct btmrvl_private *priv)
 		} else {
 			ret = priv->hw_wakeup_firmware(priv);
 			priv->adapter->hs_state = HS_DEACTIVATED;
+			BT_DBG("BT: HS DEACTIVATED due to host activity!");
 		}
 	}
 
 	return ret;
+}
+
+void btmrvl_firmware_dump(struct btmrvl_private *priv)
+{
+	if (priv->firmware_dump)
+		priv->firmware_dump(priv);
 }
 
 static int btmrvl_tx_pkt(struct btmrvl_private *priv, struct sk_buff *skb)
@@ -358,6 +419,7 @@ static void btmrvl_init_adapter(struct btmrvl_private *priv)
 	}
 
 	init_waitqueue_head(&priv->adapter->cmd_wait_q);
+	init_waitqueue_head(&priv->adapter->event_hs_wait_q);
 }
 
 static void btmrvl_free_adapter(struct btmrvl_private *priv)
@@ -448,34 +510,36 @@ static int btmrvl_download_cal_data(struct btmrvl_private *priv,
 	ret = btmrvl_send_sync_cmd(priv, BT_CMD_LOAD_CONFIG_DATA, data,
 				   BT_CAL_HDR_LEN + len);
 	if (ret)
-		BT_ERR("Failed to download caibration data\n");
+		BT_ERR("Failed to download caibration data");
 
 	return 0;
 }
 
-static int btmrvl_cal_data_dt(struct btmrvl_private *priv)
+static int btmrvl_check_device_tree(struct btmrvl_private *priv)
 {
 	struct device_node *dt_node;
 	u8 cal_data[BT_CAL_HDR_LEN + BT_CAL_DATA_SIZE];
-	const char name[] = "btmrvl_caldata";
-	const char property[] = "btmrvl,caldata";
 	int ret;
+	u32 val;
 
-	dt_node = of_find_node_by_name(NULL, name);
-	if (!dt_node)
-		return -ENODEV;
+	for_each_compatible_node(dt_node, NULL, "btmrvl,cfgdata") {
+		ret = of_property_read_u32(dt_node, "btmrvl,gpio-gap", &val);
+		if (!ret)
+			priv->btmrvl_dev.gpio_gap = val;
 
-	ret = of_property_read_u8_array(dt_node, property,
-					cal_data + BT_CAL_HDR_LEN,
-					BT_CAL_DATA_SIZE);
-	if (ret)
-		return ret;
+		ret = of_property_read_u8_array(dt_node, "btmrvl,cal-data",
+						cal_data + BT_CAL_HDR_LEN,
+						BT_CAL_DATA_SIZE);
+		if (ret)
+			return ret;
 
-	BT_DBG("Use cal data from device tree");
-	ret = btmrvl_download_cal_data(priv, cal_data, BT_CAL_DATA_SIZE);
-	if (ret) {
-		BT_ERR("Fail to download calibrate data");
-		return ret;
+		BT_DBG("Use cal data from device tree");
+		ret = btmrvl_download_cal_data(priv, cal_data,
+					       BT_CAL_DATA_SIZE);
+		if (ret) {
+			BT_ERR("Fail to download calibrate data");
+			return ret;
+		}
 	}
 
 	return 0;
@@ -484,16 +548,45 @@ static int btmrvl_cal_data_dt(struct btmrvl_private *priv)
 static int btmrvl_setup(struct hci_dev *hdev)
 {
 	struct btmrvl_private *priv = hci_get_drvdata(hdev);
+	int ret;
 
-	btmrvl_send_module_cfg_cmd(priv, MODULE_BRINGUP_REQ);
+	ret = btmrvl_send_module_cfg_cmd(priv, MODULE_BRINGUP_REQ);
+	if (ret)
+		return ret;
 
-	btmrvl_cal_data_dt(priv);
+	priv->btmrvl_dev.gpio_gap = 0xffff;
+
+	btmrvl_check_device_tree(priv);
+
+	btmrvl_pscan_window_reporting(priv, 0x01);
 
 	priv->btmrvl_dev.psmode = 1;
 	btmrvl_enable_ps(priv);
 
-	priv->btmrvl_dev.gpio_gap = 0xffff;
 	btmrvl_send_hscfg_cmd(priv);
+
+	return 0;
+}
+
+static int btmrvl_set_bdaddr(struct hci_dev *hdev, const bdaddr_t *bdaddr)
+{
+	struct sk_buff *skb;
+	long ret;
+	u8 buf[8];
+
+	buf[0] = MRVL_VENDOR_PKT;
+	buf[1] = sizeof(bdaddr_t);
+	memcpy(buf + 2, bdaddr, sizeof(bdaddr_t));
+
+	skb = __hci_cmd_sync(hdev, BT_CMD_SET_BDADDR, sizeof(buf), buf,
+			     HCI_INIT_TIMEOUT);
+	if (IS_ERR(skb)) {
+		ret = PTR_ERR(skb);
+		BT_ERR("%s: changing btmrvl device address failed (%ld)",
+		       hdev->name, ret);
+		return ret;
+	}
+	kfree_skb(skb);
 
 	return 0;
 }
@@ -517,7 +610,7 @@ static int btmrvl_service_main_thread(void *data)
 		add_wait_queue(&thread->wait_q, &wait);
 
 		set_current_state(TASK_INTERRUPTIBLE);
-		if (kthread_should_stop()) {
+		if (kthread_should_stop() || priv->surprise_removed) {
 			BT_DBG("main_thread: break from main thread");
 			break;
 		}
@@ -535,6 +628,11 @@ static int btmrvl_service_main_thread(void *data)
 		remove_wait_queue(&thread->wait_q, &wait);
 
 		BT_DBG("main_thread woke up");
+
+		if (kthread_should_stop() || priv->surprise_removed) {
+			BT_DBG("main_thread: break from main thread");
+			break;
+		}
 
 		spin_lock_irqsave(&priv->driver_lock, flags);
 		if (adapter->int_count) {
@@ -591,6 +689,7 @@ int btmrvl_register_hdev(struct btmrvl_private *priv)
 	hdev->flush = btmrvl_flush;
 	hdev->send  = btmrvl_send_frame;
 	hdev->setup = btmrvl_setup;
+	hdev->set_bdaddr = btmrvl_set_bdaddr;
 
 	hdev->dev_type = priv->btmrvl_dev.dev_type;
 
@@ -645,11 +744,16 @@ struct btmrvl_private *btmrvl_add_card(void *card)
 	init_waitqueue_head(&priv->main_thread.wait_q);
 	priv->main_thread.task = kthread_run(btmrvl_service_main_thread,
 				&priv->main_thread, "btmrvl_main_service");
+	if (IS_ERR(priv->main_thread.task))
+		goto err_thread;
 
 	priv->btmrvl_dev.card = card;
 	priv->btmrvl_dev.tx_dnld_rdy = true;
 
 	return priv;
+
+err_thread:
+	btmrvl_free_adapter(priv);
 
 err_adapter:
 	kfree(priv);
@@ -666,6 +770,7 @@ int btmrvl_remove_card(struct btmrvl_private *priv)
 	hdev = priv->btmrvl_dev.hcidev;
 
 	wake_up_interruptible(&priv->adapter->cmd_wait_q);
+	wake_up_interruptible(&priv->adapter->event_hs_wait_q);
 
 	kthread_stop(priv->main_thread.task);
 

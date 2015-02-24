@@ -29,10 +29,10 @@
 
 struct start_info _xen_start_info;
 struct start_info *xen_start_info = &_xen_start_info;
-EXPORT_SYMBOL_GPL(xen_start_info);
+EXPORT_SYMBOL(xen_start_info);
 
 enum xen_domain_type xen_domain_type = XEN_NATIVE;
-EXPORT_SYMBOL_GPL(xen_domain_type);
+EXPORT_SYMBOL(xen_domain_type);
 
 struct shared_info xen_dummy_shared_info;
 struct shared_info *HYPERVISOR_shared_info = (void *)&xen_dummy_shared_info;
@@ -181,8 +181,7 @@ static void xen_restart(enum reboot_mode reboot_mode, const char *cmd)
 	struct sched_shutdown r = { .reason = SHUTDOWN_reboot };
 	int rc;
 	rc = HYPERVISOR_sched_op(SCHEDOP_shutdown, &r);
-	if (rc)
-		BUG();
+	BUG_ON(rc);
 }
 
 static void xen_power_off(void)
@@ -190,8 +189,7 @@ static void xen_power_off(void)
 	struct sched_shutdown r = { .reason = SHUTDOWN_poweroff };
 	int rc;
 	rc = HYPERVISOR_sched_op(SCHEDOP_shutdown, &r);
-	if (rc)
-		BUG();
+	BUG_ON(rc);
 }
 
 static int xen_cpu_notification(struct notifier_block *self,
@@ -262,6 +260,7 @@ static int __init xen_guest_init(void)
 	xen_domain_type = XEN_HVM_DOMAIN;
 
 	xen_setup_features();
+
 	if (xen_feature(XENFEAT_dom0))
 		xen_start_info->flags |= SIF_INITDOMAIN|SIF_PRIVILEGED;
 	else

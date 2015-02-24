@@ -14,6 +14,7 @@
 #define __VSP1_RWPF_H__
 
 #include <media/media-entity.h>
+#include <media/v4l2-ctrls.h>
 #include <media/v4l2-subdev.h>
 
 #include "vsp1.h"
@@ -26,6 +27,7 @@
 struct vsp1_rwpf {
 	struct vsp1_entity entity;
 	struct vsp1_video video;
+	struct v4l2_ctrl_handler ctrls;
 
 	unsigned int max_width;
 	unsigned int max_height;
@@ -37,6 +39,7 @@ struct vsp1_rwpf {
 	struct v4l2_rect crop;
 
 	unsigned int offsets[2];
+	dma_addr_t buf_addr[3];
 };
 
 static inline struct vsp1_rwpf *to_rwpf(struct v4l2_subdev *subdev)

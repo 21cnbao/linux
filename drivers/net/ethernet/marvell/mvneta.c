@@ -20,6 +20,7 @@
 #include <linux/mbus.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
+#include <linux/if_vlan.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
 #include <linux/io.h>
@@ -215,7 +216,7 @@
 /* Various constants */
 
 /* Coalescing */
-#define MVNETA_TXDONE_COAL_PKTS		16
+#define MVNETA_TXDONE_COAL_PKTS		1
 #define MVNETA_RX_COAL_PKTS		32
 #define MVNETA_RX_COAL_USEC		100
 
@@ -1371,15 +1372,16 @@ static u32 mvneta_skb_tx_csum(struct mvneta_port *pp, struct sk_buff *skb)
 {
 	if (skb->ip_summed == CHECKSUM_PARTIAL) {
 		int ip_hdr_len = 0;
+		__be16 l3_proto = vlan_get_protocol(skb);
 		u8 l4_proto;
 
-		if (skb->protocol == htons(ETH_P_IP)) {
+		if (l3_proto == htons(ETH_P_IP)) {
 			struct iphdr *ip4h = ip_hdr(skb);
 
 			/* Calculate IPv4 checksum and L4 checksum */
 			ip_hdr_len = ip4h->ihl;
 			l4_proto = ip4h->protocol;
-		} else if (skb->protocol == htons(ETH_P_IPV6)) {
+		} else if (l3_proto == htons(ETH_P_IPV6)) {
 			struct ipv6hdr *ip6h = ipv6_hdr(skb);
 
 			/* Read l4_protocol from one of IPv6 extra headers */
@@ -1390,7 +1392,7 @@ static u32 mvneta_skb_tx_csum(struct mvneta_port *pp, struct sk_buff *skb)
 			return MVNETA_TX_L4_CSUM_NOT;
 
 		return mvneta_txq_desc_csum(skb_network_offset(skb),
-				skb->protocol, ip_hdr_len, l4_proto);
+					    l3_proto, ip_hdr_len, l4_proto);
 	}
 
 	return MVNETA_TX_L4_CSUM_NOT;
@@ -1719,6 +1721,7 @@ static int mvneta_tx(struct sk_buff *skb, struct net_device *dev)
 	u16 txq_id = skb_get_queue_mapping(skb);
 	struct mvneta_tx_queue *txq = &pp->txqs[txq_id];
 	struct mvneta_tx_desc *tx_desc;
+	int len = skb->len;
 	int frags = 0;
 	u32 tx_cmd;
 
@@ -1786,7 +1789,7 @@ out:
 
 		u64_stats_update_begin(&stats->syncp);
 		stats->tx_packets++;
-		stats->tx_bytes  += skb->len;
+		stats->tx_bytes  += len;
 		u64_stats_update_end(&stats->syncp);
 	} else {
 		dev->stats.tx_dropped++;
@@ -2556,11 +2559,10 @@ static void mvneta_adjust_link(struct net_device *ndev)
 				MVNETA_GMAC_FORCE_LINK_DOWN);
 			mvreg_write(pp, MVNETA_GMAC_AUTONEG_CONFIG, val);
 			mvneta_port_up(pp);
-			netdev_info(pp->dev, "link up\n");
 		} else {
 			mvneta_port_down(pp);
-			netdev_info(pp->dev, "link down\n");
 		}
+		phy_print_status(phydev);
 	}
 }
 
@@ -2969,14 +2971,14 @@ static int mvneta_probe(struct platform_device *pdev)
 		/* In the case of a fixed PHY, the DT node associated
 		 * to the PHY is the Ethernet MAC DT node.
 		 */
-		phy_node = dn;
+		phy_node = of_node_get(dn);
 	}
 
 	phy_mode = of_get_phy_mode(dn);
 	if (phy_mode < 0) {
 		dev_err(&pdev->dev, "incorrect phy-mode\n");
 		err = -EINVAL;
-		goto err_free_irq;
+		goto err_put_phy_node;
 	}
 
 	dev->tx_queue_len = MVNETA_MAX_TXD;
@@ -2992,7 +2994,7 @@ static int mvneta_probe(struct platform_device *pdev)
 	pp->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(pp->clk)) {
 		err = PTR_ERR(pp->clk);
-		goto err_free_irq;
+		goto err_put_phy_node;
 	}
 
 	clk_prepare_enable(pp->clk);
@@ -3071,6 +3073,8 @@ err_free_stats:
 	free_percpu(pp->stats);
 err_clk:
 	clk_disable_unprepare(pp->clk);
+err_put_phy_node:
+	of_node_put(phy_node);
 err_free_irq:
 	irq_dispose_mapping(dev->irq);
 err_free_netdev:
@@ -3088,6 +3092,7 @@ static int mvneta_remove(struct platform_device *pdev)
 	clk_disable_unprepare(pp->clk);
 	free_percpu(pp->stats);
 	irq_dispose_mapping(dev->irq);
+	of_node_put(pp->phy_node);
 	free_netdev(dev);
 
 	return 0;

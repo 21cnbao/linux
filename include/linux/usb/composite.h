@@ -386,6 +386,21 @@ struct usb_composite_driver {
 
 extern int usb_composite_probe(struct usb_composite_driver *driver);
 extern void usb_composite_unregister(struct usb_composite_driver *driver);
+
+/**
+ * module_usb_composite_driver() - Helper macro for registering a USB gadget
+ * composite driver
+ * @__usb_composite_driver: usb_composite_driver struct
+ *
+ * Helper macro for USB gadget composite drivers which do not do anything
+ * special in module init/exit. This eliminates a lot of boilerplate. Each
+ * module may only use this macro once, and calling it replaces module_init()
+ * and module_exit()
+ */
+#define module_usb_composite_driver(__usb_composite_driver) \
+	module_driver(__usb_composite_driver, usb_composite_probe, \
+		       usb_composite_unregister)
+
 extern void usb_composite_setup_continue(struct usb_composite_dev *cdev);
 extern int composite_dev_prepare(struct usb_composite_driver *composite,
 		struct usb_composite_dev *cdev);
@@ -412,6 +427,8 @@ static inline struct usb_composite_driver *to_cdriver(
  * @b_vendor_code: bMS_VendorCode part of the OS string
  * @use_os_string: false by default, interested gadgets set it
  * @os_desc_config: the configuration to be used with OS descriptors
+ * @setup_pending: true when setup request is queued but not completed
+ * @os_desc_pending: true when os_desc request is queued but not completed
  *
  * One of these devices is allocated and initialized before the
  * associated device driver's bind() is called.
@@ -473,6 +490,9 @@ struct usb_composite_dev {
 
 	/* protects deactivations and delayed_status counts*/
 	spinlock_t			lock;
+
+	unsigned			setup_pending:1;
+	unsigned			os_desc_pending:1;
 };
 
 extern int usb_string_id(struct usb_composite_dev *c);
@@ -486,6 +506,8 @@ extern int usb_string_ids_n(struct usb_composite_dev *c, unsigned n);
 extern void composite_disconnect(struct usb_gadget *gadget);
 extern int composite_setup(struct usb_gadget *gadget,
 		const struct usb_ctrlrequest *ctrl);
+extern void composite_suspend(struct usb_gadget *gadget);
+extern void composite_resume(struct usb_gadget *gadget);
 
 /*
  * Some systems will need runtime overrides for the  product identifiers

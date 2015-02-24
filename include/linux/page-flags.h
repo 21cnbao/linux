@@ -121,8 +121,12 @@ enum pageflags {
 	PG_fscache = PG_private_2,	/* page backed by cache */
 
 	/* XEN */
+	/* Pinned in Xen as a read-only pagetable page. */
 	PG_pinned = PG_owner_priv_1,
+	/* Pinned as part of domain save (see xen_mm_pin_all()). */
 	PG_savepinned = PG_dirty,
+	/* Has a grant mapping of another (foreign) domain's page. */
+	PG_foreign = PG_owner_priv_1,
 
 	/* SLOB */
 	PG_slob_free = PG_private,
@@ -171,12 +175,11 @@ static inline int __TestClearPage##uname(struct page *page)		\
 #define __PAGEFLAG(uname, lname) TESTPAGEFLAG(uname, lname)		\
 	__SETPAGEFLAG(uname, lname)  __CLEARPAGEFLAG(uname, lname)
 
-#define PAGEFLAG_FALSE(uname) 						\
-static inline int Page##uname(const struct page *page)			\
-			{ return 0; }
-
 #define TESTSCFLAG(uname, lname)					\
 	TESTSETFLAG(uname, lname) TESTCLEARFLAG(uname, lname)
+
+#define TESTPAGEFLAG_FALSE(uname)					\
+static inline int Page##uname(const struct page *page) { return 0; }
 
 #define SETPAGEFLAG_NOOP(uname)						\
 static inline void SetPage##uname(struct page *page) {  }
@@ -187,11 +190,20 @@ static inline void ClearPage##uname(struct page *page) {  }
 #define __CLEARPAGEFLAG_NOOP(uname)					\
 static inline void __ClearPage##uname(struct page *page) {  }
 
+#define TESTSETFLAG_FALSE(uname)					\
+static inline int TestSetPage##uname(struct page *page) { return 0; }
+
 #define TESTCLEARFLAG_FALSE(uname)					\
 static inline int TestClearPage##uname(struct page *page) { return 0; }
 
 #define __TESTCLEARFLAG_FALSE(uname)					\
 static inline int __TestClearPage##uname(struct page *page) { return 0; }
+
+#define PAGEFLAG_FALSE(uname) TESTPAGEFLAG_FALSE(uname)			\
+	SETPAGEFLAG_NOOP(uname) CLEARPAGEFLAG_NOOP(uname)
+
+#define TESTSCFLAG_FALSE(uname)						\
+	TESTSETFLAG_FALSE(uname) TESTCLEARFLAG_FALSE(uname)
 
 struct page;	/* forward declaration */
 
@@ -207,6 +219,7 @@ __PAGEFLAG(Slab, slab)
 PAGEFLAG(Checked, checked)		/* Used by some filesystems */
 PAGEFLAG(Pinned, pinned) TESTSCFLAG(Pinned, pinned)	/* Xen */
 PAGEFLAG(SavePinned, savepinned);			/* Xen */
+PAGEFLAG(Foreign, foreign);				/* Xen */
 PAGEFLAG(Reserved, reserved) __CLEARPAGEFLAG(Reserved, reserved)
 PAGEFLAG(SwapBacked, swapbacked) __CLEARPAGEFLAG(SwapBacked, swapbacked)
 	__SETPAGEFLAG(SwapBacked, swapbacked)
@@ -248,7 +261,6 @@ PAGEFLAG_FALSE(HighMem)
 PAGEFLAG(SwapCache, swapcache)
 #else
 PAGEFLAG_FALSE(SwapCache)
-	SETPAGEFLAG_NOOP(SwapCache) CLEARPAGEFLAG_NOOP(SwapCache)
 #endif
 
 PAGEFLAG(Unevictable, unevictable) __CLEARPAGEFLAG(Unevictable, unevictable)
@@ -258,8 +270,8 @@ PAGEFLAG(Unevictable, unevictable) __CLEARPAGEFLAG(Unevictable, unevictable)
 PAGEFLAG(Mlocked, mlocked) __CLEARPAGEFLAG(Mlocked, mlocked)
 	TESTSCFLAG(Mlocked, mlocked) __TESTCLEARFLAG(Mlocked, mlocked)
 #else
-PAGEFLAG_FALSE(Mlocked) SETPAGEFLAG_NOOP(Mlocked)
-	TESTCLEARFLAG_FALSE(Mlocked) __TESTCLEARFLAG_FALSE(Mlocked)
+PAGEFLAG_FALSE(Mlocked) __CLEARPAGEFLAG_NOOP(Mlocked)
+	TESTSCFLAG_FALSE(Mlocked) __TESTCLEARFLAG_FALSE(Mlocked)
 #endif
 
 #ifdef CONFIG_ARCH_USES_PG_UNCACHED

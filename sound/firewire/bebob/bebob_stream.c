@@ -129,12 +129,24 @@ snd_bebob_stream_check_internal_clock(struct snd_bebob *bebob, bool *internal)
 	/* 1.The device has its own operation to switch source of clock */
 	if (clk_spec) {
 		err = clk_spec->get(bebob, &id);
-		if (err < 0)
+		if (err < 0) {
 			dev_err(&bebob->unit->device,
 				"fail to get clock source: %d\n", err);
-		else if (strncmp(clk_spec->labels[id], SND_BEBOB_CLOCK_INTERNAL,
-				 strlen(SND_BEBOB_CLOCK_INTERNAL)) == 0)
+			goto end;
+		}
+
+		if (id >= clk_spec->num) {
+			dev_err(&bebob->unit->device,
+				"clock source %d out of range 0..%d\n",
+				id, clk_spec->num - 1);
+			err = -EIO;
+			goto end;
+		}
+
+		if (strncmp(clk_spec->labels[id], SND_BEBOB_CLOCK_INTERNAL,
+			    strlen(SND_BEBOB_CLOCK_INTERNAL)) == 0)
 			*internal = true;
+
 		goto end;
 	}
 
@@ -472,13 +484,6 @@ int snd_bebob_stream_init_duplex(struct snd_bebob *bebob)
 		amdtp_stream_destroy(&bebob->rx_stream);
 		destroy_both_connections(bebob);
 	}
-	/*
-	 * The firmware for these devices ignore MIDI messages in more than
-	 * first 8 data blocks of an received AMDTP packet.
-	 */
-	if (bebob->spec == &maudio_fw410_spec ||
-	    bebob->spec == &maudio_special_spec)
-		bebob->rx_stream.rx_blocks_for_midi = 8;
 end:
 	return err;
 }

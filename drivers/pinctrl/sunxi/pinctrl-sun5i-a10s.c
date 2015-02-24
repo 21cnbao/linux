@@ -661,6 +661,7 @@ static const struct sunxi_desc_pin sun5i_a10s_pins[] = {
 static const struct sunxi_pinctrl_desc sun5i_a10s_pinctrl_data = {
 	.pins = sun5i_a10s_pins,
 	.npins = ARRAY_SIZE(sun5i_a10s_pins),
+	.irq_banks = 1,
 };
 
 static int sun5i_a10s_pinctrl_probe(struct platform_device *pdev)
@@ -679,7 +680,6 @@ static struct platform_driver sun5i_a10s_pinctrl_driver = {
 	.probe	= sun5i_a10s_pinctrl_probe,
 	.driver	= {
 		.name		= "sun5i-a10s-pinctrl",
-		.owner		= THIS_MODULE,
 		.of_match_table	= sun5i_a10s_pinctrl_match,
 	},
 };

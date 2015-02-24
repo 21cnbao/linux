@@ -6,6 +6,7 @@
  * GPL LICENSE SUMMARY
  *
  * Copyright(c) 2014 Intel Corporation. All rights reserved.
+ * Copyright(c) 2014 Intel Mobile Communications GmbH
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -31,6 +32,7 @@
  * BSD LICENSE
  *
  * Copyright(c) 2014 Intel Corporation. All rights reserved.
+ * Copyright(c) 2014 Intel Mobile Communications GmbH
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -69,17 +71,29 @@
 
 /**
  * enum iwl_fw_error_dump_type - types of data in the dump file
- * @IWL_FW_ERROR_DUMP_SRAM:
- * @IWL_FW_ERROR_DUMP_REG:
+ * @IWL_FW_ERROR_DUMP_CSR: Control Status Registers - from offset 0
  * @IWL_FW_ERROR_DUMP_RXF:
  * @IWL_FW_ERROR_DUMP_TXCMD: last TX command data, structured as
  *	&struct iwl_fw_error_dump_txcmd packets
+ * @IWL_FW_ERROR_DUMP_DEV_FW_INFO:  struct %iwl_fw_error_dump_info
+ *	info on the device / firmware.
+ * @IWL_FW_ERROR_DUMP_FW_MONITOR: firmware monitor
+ * @IWL_FW_ERROR_DUMP_PRPH: range of periphery registers - there can be several
+ *	sections like this in a single file.
+ * @IWL_FW_ERROR_DUMP_FH_REGS: range of FH registers
+ * @IWL_FW_ERROR_DUMP_MEM: chunk of memory
  */
 enum iwl_fw_error_dump_type {
-	IWL_FW_ERROR_DUMP_SRAM = 0,
-	IWL_FW_ERROR_DUMP_REG = 1,
+	/* 0 is deprecated */
+	IWL_FW_ERROR_DUMP_CSR = 1,
 	IWL_FW_ERROR_DUMP_RXF = 2,
 	IWL_FW_ERROR_DUMP_TXCMD = 3,
+	IWL_FW_ERROR_DUMP_DEV_FW_INFO = 4,
+	IWL_FW_ERROR_DUMP_FW_MONITOR = 5,
+	IWL_FW_ERROR_DUMP_PRPH = 6,
+	IWL_FW_ERROR_DUMP_TXF = 7,
+	IWL_FW_ERROR_DUMP_FH_REGS = 8,
+	IWL_FW_ERROR_DUMP_MEM = 9,
 
 	IWL_FW_ERROR_DUMP_MAX,
 };
@@ -87,8 +101,8 @@ enum iwl_fw_error_dump_type {
 /**
  * struct iwl_fw_error_dump_data - data for one type
  * @type: %enum iwl_fw_error_dump_type
- * @len: the length starting from %data - must be a multiplier of 4.
- * @data: the data itself padded to be a multiplier of 4.
+ * @len: the length starting from %data
+ * @data: the data itself
  */
 struct iwl_fw_error_dump_data {
 	__le32 type;
@@ -121,12 +135,97 @@ struct iwl_fw_error_dump_txcmd {
 } __packed;
 
 /**
- * iwl_mvm_fw_error_next_data - advance fw error dump data pointer
+ * struct iwl_fw_error_dump_fifo - RX/TX FIFO data
+ * @fifo_num: number of FIFO (starting from 0)
+ * @available_bytes: num of bytes available in FIFO (may be less than FIFO size)
+ * @wr_ptr: position of write pointer
+ * @rd_ptr: position of read pointer
+ * @fence_ptr: position of fence pointer
+ * @fence_mode: the current mode of the fence (before locking) -
+ *	0=follow RD pointer ; 1 = freeze
+ * @data: all of the FIFO's data
+ */
+struct iwl_fw_error_dump_fifo {
+	__le32 fifo_num;
+	__le32 available_bytes;
+	__le32 wr_ptr;
+	__le32 rd_ptr;
+	__le32 fence_ptr;
+	__le32 fence_mode;
+	u8 data[];
+} __packed;
+
+enum iwl_fw_error_dump_family {
+	IWL_FW_ERROR_DUMP_FAMILY_7 = 7,
+	IWL_FW_ERROR_DUMP_FAMILY_8 = 8,
+};
+
+/**
+ * struct iwl_fw_error_dump_info - info on the device / firmware
+ * @device_family: the family of the device (7 / 8)
+ * @hw_step: the step of the device
+ * @fw_human_readable: human readable FW version
+ * @dev_human_readable: name of the device
+ * @bus_human_readable: name of the bus used
+ */
+struct iwl_fw_error_dump_info {
+	__le32 device_family;
+	__le32 hw_step;
+	u8 fw_human_readable[FW_VER_HUMAN_READABLE_SZ];
+	u8 dev_human_readable[64];
+	u8 bus_human_readable[8];
+} __packed;
+
+/**
+ * struct iwl_fw_error_dump_fw_mon - FW monitor data
+ * @fw_mon_wr_ptr: the position of the write pointer in the cyclic buffer
+ * @fw_mon_base_ptr: base pointer of the data
+ * @fw_mon_cycle_cnt: number of wrap arounds
+ * @reserved: for future use
+ * @data: captured data
+ */
+struct iwl_fw_error_dump_fw_mon {
+	__le32 fw_mon_wr_ptr;
+	__le32 fw_mon_base_ptr;
+	__le32 fw_mon_cycle_cnt;
+	__le32 reserved[3];
+	u8 data[];
+} __packed;
+
+/**
+ * struct iwl_fw_error_dump_prph - periphery registers data
+ * @prph_start: address of the first register in this chunk
+ * @data: the content of the registers
+ */
+struct iwl_fw_error_dump_prph {
+	__le32 prph_start;
+	__le32 data[];
+};
+
+enum iwl_fw_error_dump_mem_type {
+	IWL_FW_ERROR_DUMP_MEM_SRAM,
+	IWL_FW_ERROR_DUMP_MEM_SMEM,
+};
+
+/**
+ * struct iwl_fw_error_dump_mem - chunk of memory
+ * @type: %enum iwl_fw_error_dump_mem_type
+ * @offset: the offset from which the memory was read
+ * @data: the content of the memory
+ */
+struct iwl_fw_error_dump_mem {
+	__le32 type;
+	__le32 offset;
+	u8 data[];
+};
+
+/**
+ * iwl_fw_error_next_data - advance fw error dump data pointer
  * @data: previous data block
  * Returns: next data block
  */
 static inline struct iwl_fw_error_dump_data *
-iwl_mvm_fw_error_next_data(struct iwl_fw_error_dump_data *data)
+iwl_fw_error_next_data(struct iwl_fw_error_dump_data *data)
 {
 	return (void *)(data->data + le32_to_cpu(data->len));
 }

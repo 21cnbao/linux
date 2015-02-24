@@ -220,14 +220,10 @@ static inline unsigned int work_static(struct work_struct *work) { return 0; }
 #endif
 
 #define INIT_WORK(_work, _func)						\
-	do {								\
-		__INIT_WORK((_work), (_func), 0);			\
-	} while (0)
+	__INIT_WORK((_work), (_func), 0)
 
 #define INIT_WORK_ONSTACK(_work, _func)					\
-	do {								\
-		__INIT_WORK((_work), (_func), 1);			\
-	} while (0)
+	__INIT_WORK((_work), (_func), 1)
 
 #define __INIT_DELAYED_WORK(_work, _func, _tflags)			\
 	do {								\
@@ -419,7 +415,7 @@ __alloc_workqueue_key(const char *fmt, unsigned int flags, int max_active,
 	alloc_workqueue("%s", WQ_FREEZABLE | WQ_UNBOUND | WQ_MEM_RECLAIM, \
 			1, (name))
 #define create_singlethread_workqueue(name)				\
-	alloc_workqueue("%s", WQ_UNBOUND | WQ_MEM_RECLAIM, 1, (name))
+	alloc_ordered_workqueue("%s", WQ_MEM_RECLAIM, name)
 
 extern void destroy_workqueue(struct workqueue_struct *wq);
 

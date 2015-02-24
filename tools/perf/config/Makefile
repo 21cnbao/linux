@@ -20,7 +20,7 @@ NO_PERF_REGS := 1
 
 # Additional ARCH settings for x86
 ifeq ($(ARCH),x86)
-  ifeq (${IS_X86_64}, 1)
+  ifeq (${IS_64_BIT}, 1)
     CFLAGS += -DHAVE_ARCH_X86_64_SUPPORT
     ARCH_INCLUDE = ../../arch/x86/lib/memcpy_64.S ../../arch/x86/lib/memset_64.S
     LIBUNWIND_LIBS = -lunwind -lunwind-x86_64
@@ -116,6 +116,29 @@ ifdef PARSER_DEBUG
   CFLAGS             += -DPARSER_DEBUG
 endif
 
+ifndef NO_LIBPYTHON
+  # Try different combinations to accommodate systems that only have
+  # python[2][-config] in weird combinations but always preferring
+  # python2 and python2-config as per pep-0394. If we catch a
+  # python[-config] in version 3, the version check will kill it.
+  PYTHON2 := $(if $(call get-executable,python2),python2,python)
+  override PYTHON := $(call get-executable-or-default,PYTHON,$(PYTHON2))
+  PYTHON2_CONFIG := \
+    $(if $(call get-executable,$(PYTHON)-config),$(PYTHON)-config,python-config)
+  override PYTHON_CONFIG := \
+    $(call get-executable-or-default,PYTHON_CONFIG,$(PYTHON2_CONFIG))
+
+  PYTHON_CONFIG_SQ := $(call shell-sq,$(PYTHON_CONFIG))
+
+  PYTHON_EMBED_LDOPTS := $(shell $(PYTHON_CONFIG_SQ) --ldflags 2>/dev/null)
+  PYTHON_EMBED_CCOPTS := $(shell $(PYTHON_CONFIG_SQ) --cflags 2>/dev/null)
+
+  FEATURE_CHECK_CFLAGS-libpython := $(PYTHON_EMBED_CCOPTS)
+  FEATURE_CHECK_LDFLAGS-libpython := $(PYTHON_EMBED_LDOPTS)
+  FEATURE_CHECK_CFLAGS-libpython-version := $(PYTHON_EMBED_CCOPTS)
+  FEATURE_CHECK_LDFLAGS-libpython-version := $(PYTHON_EMBED_LDOPTS)
+endif
+
 CFLAGS += -fno-omit-frame-pointer
 CFLAGS += -ggdb3
 CFLAGS += -funwind-tables
@@ -127,7 +150,7 @@ CFLAGS += -std=gnu99
 # adding assembler files missing the .GNU-stack linker note.
 LDFLAGS += -Wl,-z,noexecstack
 
-EXTLIBS = -lelf -lpthread -lrt -lm -ldl
+EXTLIBS = -lpthread -lrt -lm -ldl
 
 ifneq ($(OUTPUT),)
   OUTPUT_FEATURES = $(OUTPUT)config/feature-checks/
@@ -160,6 +183,7 @@ CORE_FEATURE_TESTS =			\
 	backtrace			\
 	dwarf				\
 	fortify-source			\
+	sync-compare-and-swap		\
 	glibc				\
 	gtk2				\
 	gtk2-infobar			\
@@ -174,9 +198,11 @@ CORE_FEATURE_TESTS =			\
 	libpython-version		\
 	libslang			\
 	libunwind			\
+	pthread-attr-setaffinity-np	\
 	stackprotector-all		\
 	timerfd				\
-	libdw-dwarf-unwind
+	libdw-dwarf-unwind		\
+	zlib
 
 LIB_FEATURE_TESTS =			\
 	dwarf				\
@@ -190,22 +216,27 @@ LIB_FEATURE_TESTS =			\
 	libpython			\
 	libslang			\
 	libunwind			\
-	libdw-dwarf-unwind
+	libdw-dwarf-unwind		\
+	zlib
 
 VF_FEATURE_TESTS =			\
 	backtrace			\
 	fortify-source			\
+	sync-compare-and-swap		\
 	gtk2-infobar			\
 	libelf-getphdrnum		\
 	libelf-mmap			\
 	libpython-version		\
+	pthread-attr-setaffinity-np	\
 	stackprotector-all		\
 	timerfd				\
 	libunwind-debug-frame		\
 	bionic				\
 	liberty				\
 	liberty-z			\
-	cplus-demangle
+	cplus-demangle			\
+	compile-32			\
+	compile-x32
 
 # Set FEATURE_CHECK_(C|LD)FLAGS-all for all CORE_FEATURE_TESTS features.
 # If in the future we need per-feature checks/flags for features not
@@ -268,6 +299,14 @@ CFLAGS += -I$(LIB_INCLUDE)
 
 CFLAGS += -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE
 
+ifeq ($(feature-sync-compare-and-swap), 1)
+  CFLAGS += -DHAVE_SYNC_COMPARE_AND_SWAP_SUPPORT
+endif
+
+ifeq ($(feature-pthread-attr-setaffinity-np), 1)
+  CFLAGS += -DHAVE_PTHREAD_ATTR_SETAFFINITY_NP
+endif
+
 ifndef NO_BIONIC
   $(call feature_check,bionic)
   ifeq ($(feature-bionic), 1)
@@ -321,6 +360,7 @@ endif # NO_LIBELF
 
 ifndef NO_LIBELF
   CFLAGS += -DHAVE_LIBELF_SUPPORT
+  EXTLIBS += -lelf
 
   ifeq ($(feature-libelf-mmap), 1)
     CFLAGS += -DHAVE_LIBELF_MMAP_SUPPORT
@@ -340,10 +380,16 @@ ifndef NO_LIBELF
     else
       CFLAGS += -DHAVE_DWARF_SUPPORT $(LIBDW_CFLAGS)
       LDFLAGS += $(LIBDW_LDFLAGS)
-      EXTLIBS += -lelf -ldw
+      EXTLIBS += -ldw
     endif # PERF_HAVE_DWARF_REGS
   endif # NO_DWARF
 endif # NO_LIBELF
+
+ifeq ($(ARCH),powerpc)
+  ifndef NO_DWARF
+    CFLAGS += -DHAVE_SKIP_CALLCHAIN_IDX
+  endif
+endif
 
 ifndef NO_LIBUNWIND
   ifneq ($(feature-libunwind), 1)
@@ -472,21 +518,14 @@ define disable-python_code
   NO_LIBPYTHON := 1
 endef
 
-override PYTHON := \
-  $(call get-executable-or-default,PYTHON,python)
-
-ifndef PYTHON
-  $(call disable-python,python interpreter)
+ifdef NO_LIBPYTHON
+  $(call disable-python)
 else
 
-  PYTHON_WORD := $(call shell-wordify,$(PYTHON))
-
-  ifdef NO_LIBPYTHON
-    $(call disable-python)
+  ifndef PYTHON
+    $(call disable-python,python interpreter)
   else
-
-    override PYTHON_CONFIG := \
-      $(call get-executable-or-default,PYTHON_CONFIG,$(PYTHON)-config)
+    PYTHON_WORD := $(call shell-wordify,$(PYTHON))
 
     ifndef PYTHON_CONFIG
       $(call disable-python,python-config tool)
@@ -574,6 +613,15 @@ ifneq ($(filter -lbfd,$(EXTLIBS)),)
   CFLAGS += -DHAVE_LIBBFD_SUPPORT
 endif
 
+ifndef NO_ZLIB
+  ifeq ($(feature-zlib), 1)
+    CFLAGS += -DHAVE_ZLIB_SUPPORT
+    EXTLIBS += -lz
+  else
+    NO_ZLIB := 1
+  endif
+endif
+
 ifndef NO_BACKTRACE
   ifeq ($(feature-backtrace), 1)
     CFLAGS += -DHAVE_BACKTRACE_SUPPORT
@@ -588,6 +636,35 @@ ifndef NO_LIBNUMA
     CFLAGS += -DHAVE_LIBNUMA_SUPPORT
     EXTLIBS += -lnuma
   endif
+endif
+
+ifdef HAVE_KVM_STAT_SUPPORT
+    CFLAGS += -DHAVE_KVM_STAT_SUPPORT
+endif
+
+ifeq (${IS_64_BIT}, 1)
+  ifndef NO_PERF_READ_VDSO32
+    $(call feature_check,compile-32)
+    ifeq ($(feature-compile-32), 1)
+      CFLAGS += -DHAVE_PERF_READ_VDSO32
+    else
+      NO_PERF_READ_VDSO32 := 1
+    endif
+  endif
+  ifneq (${IS_X86_64}, 1)
+    NO_PERF_READ_VDSOX32 := 1
+  endif
+  ifndef NO_PERF_READ_VDSOX32
+    $(call feature_check,compile-x32)
+    ifeq ($(feature-compile-x32), 1)
+      CFLAGS += -DHAVE_PERF_READ_VDSOX32
+    else
+      NO_PERF_READ_VDSOX32 := 1
+    endif
+  endif
+else
+  NO_PERF_READ_VDSO32 := 1
+  NO_PERF_READ_VDSOX32 := 1
 endif
 
 # Among the variables below, these:
@@ -621,11 +698,13 @@ else
 sysconfdir = $(prefix)/etc
 ETC_PERFCONFIG = etc/perfconfig
 endif
+ifndef lib
 ifeq ($(IS_X86_64),1)
 lib = lib64
 else
 lib = lib
 endif
+endif # lib
 libdir = $(prefix)/$(lib)
 
 # Shell quote (do not use $(call) to accommodate ancient setups);

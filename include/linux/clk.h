@@ -106,9 +106,38 @@ int clk_notifier_unregister(struct clk *clk, struct notifier_block *nb);
  */
 long clk_get_accuracy(struct clk *clk);
 
+/**
+ * clk_set_phase - adjust the phase shift of a clock signal
+ * @clk: clock signal source
+ * @degrees: number of degrees the signal is shifted
+ *
+ * Shifts the phase of a clock signal by the specified degrees. Returns 0 on
+ * success, -EERROR otherwise.
+ */
+int clk_set_phase(struct clk *clk, int degrees);
+
+/**
+ * clk_get_phase - return the phase shift of a clock signal
+ * @clk: clock signal source
+ *
+ * Returns the phase shift of a clock node in degrees, otherwise returns
+ * -EERROR.
+ */
+int clk_get_phase(struct clk *clk);
+
 #else
 
 static inline long clk_get_accuracy(struct clk *clk)
+{
+	return -ENOTSUPP;
+}
+
+static inline long clk_set_phase(struct clk *clk, int phase)
+{
+	return -ENOTSUPP;
+}
+
+static inline long clk_get_phase(struct clk *clk)
 {
 	return -ENOTSUPP;
 }
@@ -238,7 +267,7 @@ void clk_put(struct clk *clk);
 
 /**
  * devm_clk_put	- "free" a managed clock source
- * @dev: device used to acuqire the clock
+ * @dev: device used to acquire the clock
  * @clk: clock source acquired with devm_clk_get()
  *
  * Note: drivers must ensure that all clk_enable calls made on this
@@ -271,6 +300,46 @@ long clk_round_rate(struct clk *clk, unsigned long rate);
  * Returns success (0) or negative errno.
  */
 int clk_set_rate(struct clk *clk, unsigned long rate);
+
+/**
+ * clk_has_parent - check if a clock is a possible parent for another
+ * @clk: clock source
+ * @parent: parent clock source
+ *
+ * This function can be used in drivers that need to check that a clock can be
+ * the parent of another without actually changing the parent.
+ *
+ * Returns true if @parent is a possible parent for @clk, false otherwise.
+ */
+bool clk_has_parent(struct clk *clk, struct clk *parent);
+
+/**
+ * clk_set_rate_range - set a rate range for a clock source
+ * @clk: clock source
+ * @min: desired minimum clock rate in Hz, inclusive
+ * @max: desired maximum clock rate in Hz, inclusive
+ *
+ * Returns success (0) or negative errno.
+ */
+int clk_set_rate_range(struct clk *clk, unsigned long min, unsigned long max);
+
+/**
+ * clk_set_min_rate - set a minimum clock rate for a clock source
+ * @clk: clock source
+ * @rate: desired minimum clock rate in Hz, inclusive
+ *
+ * Returns success (0) or negative errno.
+ */
+int clk_set_min_rate(struct clk *clk, unsigned long rate);
+
+/**
+ * clk_set_max_rate - set a maximum clock rate for a clock source
+ * @clk: clock source
+ * @rate: desired maximum clock rate in Hz, inclusive
+ *
+ * Returns success (0) or negative errno.
+ */
+int clk_set_max_rate(struct clk *clk, unsigned long rate);
 
 /**
  * clk_set_parent - set the parent clock source for this clock
@@ -343,6 +412,11 @@ static inline int clk_set_rate(struct clk *clk, unsigned long rate)
 static inline long clk_round_rate(struct clk *clk, unsigned long rate)
 {
 	return 0;
+}
+
+static inline bool clk_has_parent(struct clk *clk, struct clk *parent)
+{
+	return true;
 }
 
 static inline int clk_set_parent(struct clk *clk, struct clk *parent)

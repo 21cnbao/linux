@@ -100,6 +100,7 @@ static int radeon_process_aux_ch(struct radeon_i2c_chan *chan,
 	memset(&args, 0, sizeof(args));
 
 	mutex_lock(&chan->mutex);
+	mutex_lock(&rdev->mode_info.atom_context->scratch_mutex);
 
 	base = (unsigned char *)(rdev->mode_info.atom_context->scratch + 1);
 
@@ -113,7 +114,7 @@ static int radeon_process_aux_ch(struct radeon_i2c_chan *chan,
 	if (ASIC_IS_DCE4(rdev))
 		args.v2.ucHPD_ID = chan->rec.hpd;
 
-	atom_execute_table(rdev->mode_info.atom_context, index, (uint32_t *)&args);
+	atom_execute_table_scratch_unlocked(rdev->mode_info.atom_context, index, (uint32_t *)&args);
 
 	*ack = args.v1.ucReplyStatus;
 
@@ -147,6 +148,7 @@ static int radeon_process_aux_ch(struct radeon_i2c_chan *chan,
 
 	r = recv_bytes;
 done:
+	mutex_unlock(&rdev->mode_info.atom_context->scratch_mutex);
 	mutex_unlock(&chan->mutex);
 
 	return r;
@@ -232,8 +234,8 @@ void radeon_dp_aux_init(struct radeon_connector *radeon_connector)
 
 /***** general DP utility functions *****/
 
-#define DP_VOLTAGE_MAX         DP_TRAIN_VOLTAGE_SWING_1200
-#define DP_PRE_EMPHASIS_MAX    DP_TRAIN_PRE_EMPHASIS_9_5
+#define DP_VOLTAGE_MAX         DP_TRAIN_VOLTAGE_SWING_LEVEL_3
+#define DP_PRE_EMPHASIS_MAX    DP_TRAIN_PRE_EMPH_LEVEL_3
 
 static void dp_get_adjust_train(u8 link_status[DP_LINK_STATUS_SIZE],
 				int lane_count,
@@ -405,16 +407,13 @@ bool radeon_dp_getdpcd(struct radeon_connector *radeon_connector)
 	u8 msg[DP_DPCD_SIZE];
 	int ret;
 
-	char dpcd_hex_dump[DP_DPCD_SIZE * 3];
-
 	ret = drm_dp_dpcd_read(&radeon_connector->ddc_bus->aux, DP_DPCD_REV, msg,
 			       DP_DPCD_SIZE);
 	if (ret > 0) {
 		memcpy(dig_connector->dpcd, msg, DP_DPCD_SIZE);
 
-		hex_dump_to_buffer(dig_connector->dpcd, sizeof(dig_connector->dpcd),
-				   32, 1, dpcd_hex_dump, sizeof(dpcd_hex_dump), false);
-		DRM_DEBUG_KMS("DPCD: %s\n", dpcd_hex_dump);
+		DRM_DEBUG_KMS("DPCD: %*ph\n", (int)sizeof(dig_connector->dpcd),
+			      dig_connector->dpcd);
 
 		radeon_dp_probe_oui(radeon_connector);
 
@@ -492,6 +491,10 @@ int radeon_dp_mode_valid_helper(struct drm_connector *connector,
 	struct radeon_connector *radeon_connector = to_radeon_connector(connector);
 	struct radeon_connector_atom_dig *dig_connector;
 	int dp_clock;
+
+	if ((mode->clock > 340000) &&
+	    (!radeon_connector_is_dp12_capable(connector)))
+		return MODE_CLOCK_HIGH;
 
 	if (!radeon_connector->con_priv)
 		return MODE_CLOCK_HIGH;
@@ -620,10 +623,8 @@ static int radeon_dp_link_train_init(struct radeon_dp_link_train_info *dp_info)
 		drm_dp_dpcd_writeb(dp_info->aux,
 				   DP_DOWNSPREAD_CTRL, 0);
 
-	if ((dp_info->connector->connector_type == DRM_MODE_CONNECTOR_eDP) &&
-	    (dig->panel_mode == DP_PANEL_MODE_INTERNAL_DP2_MODE)) {
+	if (dig->panel_mode == DP_PANEL_MODE_INTERNAL_DP2_MODE)
 		drm_dp_dpcd_writeb(dp_info->aux, DP_EDP_CONFIGURATION_SET, 1);
-	}
 
 	/* set the lane count on the sink */
 	tmp = dp_info->dp_lane_count;

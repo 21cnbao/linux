@@ -6,7 +6,7 @@ menu "Bus devices"
 
 config BRCMSTB_GISB_ARB
 	bool "Broadcom STB GISB bus arbiter"
-	depends on ARM
+	depends on ARM || MIPS
 	help
 	  Driver for the Broadcom Set Top Box System-on-a-chip internal bus
 	  arbiter. This driver provides timeout and target abort error handling
@@ -49,6 +49,14 @@ config ARM_CCI
 	help
 	  Driver supporting the CCI cache coherent interconnect for ARM
 	  platforms.
+
+config ARM_CCN
+	bool "ARM CCN driver support"
+	depends on ARM || ARM64
+	depends on PERF_EVENTS
+	help
+	  PMU (perf) driver supporting the ARM CCN (Cache Coherent Network)
+	  interconnect.
 
 config VEXPRESS_CONFIG
 	bool "Versatile Express configuration bus"

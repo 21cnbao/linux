@@ -12,6 +12,29 @@
 
 #include <linux/security.h>
 
+static int cap_binder_set_context_mgr(struct task_struct *mgr)
+{
+	return 0;
+}
+
+static int cap_binder_transaction(struct task_struct *from,
+				  struct task_struct *to)
+{
+	return 0;
+}
+
+static int cap_binder_transfer_binder(struct task_struct *from,
+				      struct task_struct *to)
+{
+	return 0;
+}
+
+static int cap_binder_transfer_file(struct task_struct *from,
+				    struct task_struct *to, struct file *file)
+{
+	return 0;
+}
+
 static int cap_syslog(int type)
 {
 	return 0;
@@ -343,9 +366,9 @@ static int cap_file_fcntl(struct file *file, unsigned int cmd,
 	return 0;
 }
 
-static int cap_file_set_fowner(struct file *file)
+static void cap_file_set_fowner(struct file *file)
 {
-	return 0;
+	return;
 }
 
 static int cap_file_send_sigiotask(struct task_struct *tsk,
@@ -397,6 +420,11 @@ static int cap_kernel_act_as(struct cred *new, u32 secid)
 }
 
 static int cap_kernel_create_files_as(struct cred *new, struct inode *inode)
+{
+	return 0;
+}
+
+static int cap_kernel_fw_from_file(struct file *file, char *buf, size_t size)
 {
 	return 0;
 }
@@ -925,6 +953,10 @@ static void cap_audit_rule_free(void *lsmrule)
 
 void __init security_fixup_ops(struct security_operations *ops)
 {
+	set_to_cap_if_null(ops, binder_set_context_mgr);
+	set_to_cap_if_null(ops, binder_transaction);
+	set_to_cap_if_null(ops, binder_transfer_binder);
+	set_to_cap_if_null(ops, binder_transfer_file);
 	set_to_cap_if_null(ops, ptrace_access_check);
 	set_to_cap_if_null(ops, ptrace_traceme);
 	set_to_cap_if_null(ops, capget);
@@ -1015,6 +1047,7 @@ void __init security_fixup_ops(struct security_operations *ops)
 	set_to_cap_if_null(ops, cred_transfer);
 	set_to_cap_if_null(ops, kernel_act_as);
 	set_to_cap_if_null(ops, kernel_create_files_as);
+	set_to_cap_if_null(ops, kernel_fw_from_file);
 	set_to_cap_if_null(ops, kernel_module_request);
 	set_to_cap_if_null(ops, kernel_module_from_file);
 	set_to_cap_if_null(ops, task_fix_setuid);

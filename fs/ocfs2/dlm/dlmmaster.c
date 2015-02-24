@@ -625,9 +625,6 @@ struct dlm_lock_resource *dlm_new_lockres(struct dlm_ctxt *dlm,
 	return res;
 
 error:
-	if (res && res->lockname.name)
-		kmem_cache_free(dlm_lockname_cache, (void *)res->lockname.name);
-
 	if (res)
 		kmem_cache_free(dlm_lockres_cache, res);
 	return NULL;
@@ -655,17 +652,21 @@ void dlm_lockres_clear_refmap_bit(struct dlm_ctxt *dlm,
 	clear_bit(bit, res->refmap);
 }
 
-
-void dlm_lockres_grab_inflight_ref(struct dlm_ctxt *dlm,
+static void __dlm_lockres_grab_inflight_ref(struct dlm_ctxt *dlm,
 				   struct dlm_lock_resource *res)
 {
-	assert_spin_locked(&res->spinlock);
-
 	res->inflight_locks++;
 
 	mlog(0, "%s: res %.*s, inflight++: now %u, %ps()\n", dlm->name,
 	     res->lockname.len, res->lockname.name, res->inflight_locks,
 	     __builtin_return_address(0));
+}
+
+void dlm_lockres_grab_inflight_ref(struct dlm_ctxt *dlm,
+				   struct dlm_lock_resource *res)
+{
+	assert_spin_locked(&res->spinlock);
+	__dlm_lockres_grab_inflight_ref(dlm, res);
 }
 
 void dlm_lockres_drop_inflight_ref(struct dlm_ctxt *dlm,
@@ -692,14 +693,6 @@ void __dlm_lockres_grab_inflight_worker(struct dlm_ctxt *dlm,
 	mlog(0, "%s:%.*s: inflight assert worker++: now %u\n",
 			dlm->name, res->lockname.len, res->lockname.name,
 			res->inflight_assert_workers);
-}
-
-static void dlm_lockres_grab_inflight_worker(struct dlm_ctxt *dlm,
-		struct dlm_lock_resource *res)
-{
-	spin_lock(&res->spinlock);
-	__dlm_lockres_grab_inflight_worker(dlm, res);
-	spin_unlock(&res->spinlock);
 }
 
 static void __dlm_lockres_drop_inflight_worker(struct dlm_ctxt *dlm,
@@ -894,10 +887,8 @@ lookup:
 	/* finally add the lockres to its hash bucket */
 	__dlm_insert_lockres(dlm, res);
 
-	/* Grab inflight ref to pin the resource */
-	spin_lock(&res->spinlock);
-	dlm_lockres_grab_inflight_ref(dlm, res);
-	spin_unlock(&res->spinlock);
+	/* since this lockres is new it doesn't not require the spinlock */
+	__dlm_lockres_grab_inflight_ref(dlm, res);
 
 	/* get an extra ref on the mle in case this is a BLOCK
 	 * if so, the creator of the BLOCK may try to put the last
@@ -1461,6 +1452,18 @@ way_up_top:
 
 		/* take care of the easy cases up front */
 		spin_lock(&res->spinlock);
+
+		/*
+		 * Right after dlm spinlock was released, dlm_thread could have
+		 * purged the lockres. Check if lockres got unhashed. If so
+		 * start over.
+		 */
+		if (hlist_unhashed(&res->hash_node)) {
+			spin_unlock(&res->spinlock);
+			dlm_lockres_put(res);
+			goto way_up_top;
+		}
+
 		if (res->state & (DLM_LOCK_RES_RECOVERING|
 				  DLM_LOCK_RES_MIGRATING)) {
 			spin_unlock(&res->spinlock);
@@ -1635,6 +1638,7 @@ send_response:
 		}
 		mlog(0, "%u is the owner of %.*s, cleaning everyone else\n",
 			     dlm->node_num, res->lockname.len, res->lockname.name);
+		spin_lock(&res->spinlock);
 		ret = dlm_dispatch_assert_master(dlm, res, 0, request->node_idx,
 						 DLM_ASSERT_MASTER_MLE_CLEANUP);
 		if (ret < 0) {
@@ -1642,7 +1646,8 @@ send_response:
 			response = DLM_MASTER_RESP_ERROR;
 			dlm_lockres_put(res);
 		} else
-			dlm_lockres_grab_inflight_worker(dlm, res);
+			__dlm_lockres_grab_inflight_worker(dlm, res);
+		spin_unlock(&res->spinlock);
 	} else {
 		if (res)
 			dlm_lockres_put(res);
@@ -2037,6 +2042,10 @@ kill:
 	     "and killing the other node now!  This node is OK and can continue.\n");
 	__dlm_print_one_lock_resource(res);
 	spin_unlock(&res->spinlock);
+	spin_lock(&dlm->master_lock);
+	if (mle)
+		__dlm_put_mle(mle);
+	spin_unlock(&dlm->master_lock);
 	spin_unlock(&dlm->spinlock);
 	*ret_data = (void *)res;
 	dlm_put(dlm);
@@ -2403,6 +2412,10 @@ static int dlm_is_lockres_migrateable(struct dlm_ctxt *dlm,
 
 	/* delay migration when the lockres is in MIGRATING state */
 	if (res->state & DLM_LOCK_RES_MIGRATING)
+		return 0;
+
+	/* delay migration when the lockres is in RECOCERING state */
+	if (res->state & DLM_LOCK_RES_RECOVERING)
 		return 0;
 
 	if (res->owner != dlm->node_num)

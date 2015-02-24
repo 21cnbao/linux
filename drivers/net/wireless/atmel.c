@@ -45,7 +45,6 @@
 #include <linux/ptrace.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <linux/ctype.h>
 #include <linux/timer.h>
 #include <asm/byteorder.h>
 #include <asm/io.h>
@@ -2598,11 +2597,11 @@ static const iw_handler atmel_private_handler[] =
 	NULL,				/* SIOCIWFIRSTPRIV */
 };
 
-typedef struct atmel_priv_ioctl {
+struct atmel_priv_ioctl {
 	char id[32];
 	unsigned char __user *data;
 	unsigned short len;
-} atmel_priv_ioctl;
+};
 
 #define ATMELFWL	SIOCIWFIRSTPRIV
 #define ATMELIDIFC	ATMELFWL + 1
@@ -2615,7 +2614,7 @@ static const struct iw_priv_args atmel_private_args[] = {
 		.cmd = ATMELFWL,
 		.set_args = IW_PRIV_TYPE_BYTE
 				| IW_PRIV_SIZE_FIXED
-				| sizeof (atmel_priv_ioctl),
+				| sizeof(struct atmel_priv_ioctl),
 		.get_args = IW_PRIV_TYPE_NONE,
 		.name = "atmelfwl"
 	}, {
@@ -2645,7 +2644,7 @@ static int atmel_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
 	int i, rc = 0;
 	struct atmel_private *priv = netdev_priv(dev);
-	atmel_priv_ioctl com;
+	struct atmel_priv_ioctl com;
 	struct iwreq *wrq = (struct iwreq *) rq;
 	unsigned char *new_firmware;
 	char domain[REGDOMAINSZ + 1];
@@ -2699,16 +2698,7 @@ static int atmel_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 		domain[REGDOMAINSZ] = 0;
 		rc = -EINVAL;
 		for (i = 0; i < ARRAY_SIZE(channel_table); i++) {
-			/* strcasecmp doesn't exist in the library */
-			char *a = channel_table[i].name;
-			char *b = domain;
-			while (*a) {
-				char c1 = *a++;
-				char c2 = *b++;
-				if (tolower(c1) != tolower(c2))
-					break;
-			}
-			if (!*a && !*b) {
+			if (!strcasecmp(channel_table[i].name, domain)) {
 				priv->config_reg_domain = channel_table[i].reg_domain;
 				rc = 0;
 			}

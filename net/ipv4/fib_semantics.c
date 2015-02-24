@@ -157,9 +157,12 @@ static void rt_fibinfo_free(struct rtable __rcu **rtp)
 
 static void free_nh_exceptions(struct fib_nh *nh)
 {
-	struct fnhe_hash_bucket *hash = nh->nh_exceptions;
+	struct fnhe_hash_bucket *hash;
 	int i;
 
+	hash = rcu_dereference_protected(nh->nh_exceptions, 1);
+	if (!hash)
+		return;
 	for (i = 0; i < FNHE_HASH_SIZE; i++) {
 		struct fib_nh_exception *fnhe;
 
@@ -205,8 +208,7 @@ static void free_fib_info_rcu(struct rcu_head *head)
 	change_nexthops(fi) {
 		if (nexthop_nh->nh_dev)
 			dev_put(nexthop_nh->nh_dev);
-		if (nexthop_nh->nh_exceptions)
-			free_nh_exceptions(nexthop_nh);
+		free_nh_exceptions(nexthop_nh);
 		rt_fibinfo_free_cpus(nexthop_nh->nh_pcpu_rth_output);
 		rt_fibinfo_free(&nexthop_nh->nh_rth_input);
 	} endfor_nexthops(fi);
@@ -358,7 +360,8 @@ static inline size_t fib_nlmsg_size(struct fib_info *fi)
 			 + nla_total_size(4) /* RTA_TABLE */
 			 + nla_total_size(4) /* RTA_DST */
 			 + nla_total_size(4) /* RTA_PRIORITY */
-			 + nla_total_size(4); /* RTA_PREFSRC */
+			 + nla_total_size(4) /* RTA_PREFSRC */
+			 + nla_total_size(TCP_CA_NAME_MAX); /* RTAX_CC_ALGO */
 
 	/* space for nested metrics */
 	payload += nla_total_size((RTAX_MAX * nla_total_size(4)));
@@ -406,24 +409,6 @@ void rtmsg_fib(int event, __be32 key, struct fib_alias *fa,
 errout:
 	if (err < 0)
 		rtnl_set_sk_err(info->nl_net, RTNLGRP_IPV4_ROUTE, err);
-}
-
-/* Return the first fib alias matching TOS with
- * priority less than or equal to PRIO.
- */
-struct fib_alias *fib_find_alias(struct list_head *fah, u8 tos, u32 prio)
-{
-	if (fah) {
-		struct fib_alias *fa;
-		list_for_each_entry(fa, fah, fa_list) {
-			if (fa->fa_tos > tos)
-				continue;
-			if (fa->fa_info->fib_priority >= prio ||
-			    fa->fa_tos < tos)
-				return fa;
-		}
-	}
-	return NULL;
 }
 
 static int fib_detect_death(struct fib_info *fi, int order,
@@ -535,7 +520,7 @@ int fib_nh_match(struct fib_config *cfg, struct fib_info *fi)
 			return 1;
 
 		attrlen = rtnh_attrlen(rtnh);
-		if (attrlen < 0) {
+		if (attrlen > 0) {
 			struct nlattr *nla, *attrs = rtnh_attrs(rtnh);
 
 			nla = nla_find(attrs, attrlen, RTA_GATEWAY);
@@ -857,7 +842,16 @@ struct fib_info *fib_create_info(struct fib_config *cfg)
 
 				if (type > RTAX_MAX)
 					goto err_inval;
-				val = nla_get_u32(nla);
+				if (type == RTAX_CC_ALGO) {
+					char tmp[TCP_CA_NAME_MAX];
+
+					nla_strlcpy(tmp, nla, sizeof(tmp));
+					val = tcp_ca_get_key_by_name(tmp);
+					if (val == TCP_CA_UNSPEC)
+						goto err_inval;
+				} else {
+					val = nla_get_u32(nla);
+				}
 				if (type == RTAX_ADVMSS && val > 65535 - 40)
 					val = 65535 - 40;
 				if (type == RTAX_MTU && val > 65535 - 15)
@@ -1079,7 +1073,8 @@ int fib_dump_info(struct sk_buff *skb, u32 portid, u32 seq, int event,
 		nla_nest_end(skb, mp);
 	}
 #endif
-	return nlmsg_end(skb, nlh);
+	nlmsg_end(skb, nlh);
+	return 0;
 
 nla_put_failure:
 	nlmsg_cancel(skb, nlh);

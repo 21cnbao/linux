@@ -466,7 +466,8 @@ static DECLARE_DELAYED_WORK(sync_cmos_work, sync_cmos_clock);
 
 static void sync_cmos_clock(struct work_struct *work)
 {
-	struct timespec now, next;
+	struct timespec64 now;
+	struct timespec next;
 	int fail = 1;
 
 	/*
@@ -485,15 +486,15 @@ static void sync_cmos_clock(struct work_struct *work)
 		return;
 	}
 
-	getnstimeofday(&now);
+	getnstimeofday64(&now);
 	if (abs(now.tv_nsec - (NSEC_PER_SEC / 2)) <= tick_nsec * 5) {
-		struct timespec adjust = now;
+		struct timespec64 adjust = now;
 
 		fail = -ENODEV;
 		if (persistent_clock_is_local)
 			adjust.tv_sec -= (sys_tz.tz_minuteswest * 60);
 #ifdef CONFIG_GENERIC_CMOS_UPDATE
-		fail = update_persistent_clock(adjust);
+		fail = update_persistent_clock(timespec64_to_timespec(adjust));
 #endif
 #ifdef CONFIG_RTC_SYSTOHC
 		if (fail == -ENODEV)
@@ -531,7 +532,7 @@ void ntp_notify_cmos_timer(void) { }
 /*
  * Propagate a new txc->status value into the NTP state:
  */
-static inline void process_adj_status(struct timex *txc, struct timespec *ts)
+static inline void process_adj_status(struct timex *txc, struct timespec64 *ts)
 {
 	if ((time_status & STA_PLL) && !(txc->status & STA_PLL)) {
 		time_state = TIME_OK;
@@ -554,7 +555,7 @@ static inline void process_adj_status(struct timex *txc, struct timespec *ts)
 
 
 static inline void process_adjtimex_modes(struct timex *txc,
-						struct timespec *ts,
+						struct timespec64 *ts,
 						s32 *time_tai)
 {
 	if (txc->modes & ADJ_STATUS)
@@ -632,6 +633,17 @@ int ntp_validate_timex(struct timex *txc)
 	if ((txc->modes & ADJ_SETOFFSET) && (!capable(CAP_SYS_TIME)))
 		return -EPERM;
 
+	/*
+	 * Check for potential multiplication overflows that can
+	 * only happen on 64-bit systems:
+	 */
+	if ((txc->modes & ADJ_FREQUENCY) && (BITS_PER_LONG == 64)) {
+		if (LLONG_MIN / PPM_SCALE > txc->freq)
+			return -EINVAL;
+		if (LLONG_MAX / PPM_SCALE < txc->freq)
+			return -EINVAL;
+	}
+
 	return 0;
 }
 
@@ -640,7 +652,7 @@ int ntp_validate_timex(struct timex *txc)
  * adjtimex mainly allows reading (and writing, if superuser) of
  * kernel time-keeping variables. used by xntpd.
  */
-int __do_adjtimex(struct timex *txc, struct timespec *ts, s32 *time_tai)
+int __do_adjtimex(struct timex *txc, struct timespec64 *ts, s32 *time_tai)
 {
 	int result;
 
@@ -684,7 +696,7 @@ int __do_adjtimex(struct timex *txc, struct timespec *ts, s32 *time_tai)
 	/* fill PPS status fields */
 	pps_fill_timex(txc);
 
-	txc->time.tv_sec = ts->tv_sec;
+	txc->time.tv_sec = (time_t)ts->tv_sec;
 	txc->time.tv_usec = ts->tv_nsec;
 	if (!(time_status & STA_NANO))
 		txc->time.tv_usec /= NSEC_PER_USEC;

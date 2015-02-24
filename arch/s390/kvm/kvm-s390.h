@@ -18,13 +18,9 @@
 #include <linux/hrtimer.h>
 #include <linux/kvm.h>
 #include <linux/kvm_host.h>
+#include <asm/facility.h>
 
 typedef int (*intercept_handler_t)(struct kvm_vcpu *vcpu);
-
-/* declare vfacilities extern */
-extern unsigned long *vfacilities;
-
-int kvm_handle_sie_intercept(struct kvm_vcpu *vcpu);
 
 /* Transactional Memory Execution related macros */
 #define IS_TE_ENABLED(vcpu)	((vcpu->arch.sie_block->ecb & 0x10))
@@ -45,9 +41,9 @@ do { \
 	  d_args); \
 } while (0)
 
-static inline int __cpu_is_stopped(struct kvm_vcpu *vcpu)
+static inline int is_vcpu_stopped(struct kvm_vcpu *vcpu)
 {
-	return atomic_read(&vcpu->arch.sie_block->cpuflags) & CPUSTAT_STOP_INT;
+	return atomic_read(&vcpu->arch.sie_block->cpuflags) & CPUSTAT_STOPPED;
 }
 
 static inline int kvm_is_ucontrol(struct kvm *kvm)
@@ -70,7 +66,7 @@ static inline u32 kvm_s390_get_prefix(struct kvm_vcpu *vcpu)
 static inline void kvm_s390_set_prefix(struct kvm_vcpu *vcpu, u32 prefix)
 {
 	vcpu->arch.sie_block->prefix = prefix >> GUEST_PREFIX_SHIFT;
-	vcpu->arch.sie_block->ihcpu  = 0xffff;
+	kvm_make_request(KVM_REQ_TLB_FLUSH, vcpu);
 	kvm_make_request(KVM_REQ_MMU_RELOAD, vcpu);
 }
 
@@ -129,23 +125,38 @@ static inline void kvm_s390_set_psw_cc(struct kvm_vcpu *vcpu, unsigned long cc)
 	vcpu->arch.sie_block->gpsw.mask |= cc << 44;
 }
 
+/* test availability of facility in a kvm intance */
+static inline int test_kvm_facility(struct kvm *kvm, unsigned long nr)
+{
+	return __test_facility(nr, kvm->arch.model.fac->kvm);
+}
+
+/* are cpu states controlled by user space */
+static inline int kvm_s390_user_cpu_state_ctrl(struct kvm *kvm)
+{
+	return kvm->arch.user_cpu_state_ctrl != 0;
+}
+
 int kvm_s390_handle_wait(struct kvm_vcpu *vcpu);
+void kvm_s390_vcpu_wakeup(struct kvm_vcpu *vcpu);
 enum hrtimer_restart kvm_s390_idle_wakeup(struct hrtimer *timer);
-void kvm_s390_tasklet(unsigned long parm);
-void kvm_s390_deliver_pending_interrupts(struct kvm_vcpu *vcpu);
-void kvm_s390_deliver_pending_machine_checks(struct kvm_vcpu *vcpu);
+int __must_check kvm_s390_deliver_pending_interrupts(struct kvm_vcpu *vcpu);
 void kvm_s390_clear_local_irqs(struct kvm_vcpu *vcpu);
 void kvm_s390_clear_float_irqs(struct kvm *kvm);
 int __must_check kvm_s390_inject_vm(struct kvm *kvm,
 				    struct kvm_s390_interrupt *s390int);
 int __must_check kvm_s390_inject_vcpu(struct kvm_vcpu *vcpu,
-				      struct kvm_s390_interrupt *s390int);
+				      struct kvm_s390_irq *irq);
 int __must_check kvm_s390_inject_program_int(struct kvm_vcpu *vcpu, u16 code);
 struct kvm_s390_interrupt_info *kvm_s390_get_io_int(struct kvm *kvm,
 						    u64 cr6, u64 schid);
 void kvm_s390_reinject_io_int(struct kvm *kvm,
 			      struct kvm_s390_interrupt_info *inti);
 int kvm_s390_mask_adapter(struct kvm *kvm, unsigned int id, bool masked);
+
+/* implemented in intercept.c */
+void kvm_s390_rewind_psw(struct kvm_vcpu *vcpu, int ilc);
+int kvm_handle_sie_intercept(struct kvm_vcpu *vcpu);
 
 /* implemented in priv.c */
 int is_valid_psw(psw_t *psw);
@@ -176,7 +187,8 @@ int kvm_s390_vcpu_setup_cmma(struct kvm_vcpu *vcpu);
 void kvm_s390_vcpu_unsetup_cmma(struct kvm_vcpu *vcpu);
 /* is cmma enabled */
 bool kvm_s390_cmma_enabled(struct kvm *kvm);
-int test_vfacility(unsigned long nr);
+unsigned long kvm_s390_fac_list_mask_size(void);
+extern unsigned long kvm_s390_fac_list_mask[];
 
 /* implemented in diag.c */
 int kvm_s390_handle_diag(struct kvm_vcpu *vcpu);
@@ -217,11 +229,17 @@ static inline int kvm_s390_inject_prog_cond(struct kvm_vcpu *vcpu, int rc)
 	return kvm_s390_inject_prog_irq(vcpu, &vcpu->arch.pgm);
 }
 
+int s390int_to_s390irq(struct kvm_s390_interrupt *s390int,
+			struct kvm_s390_irq *s390irq);
+
 /* implemented in interrupt.c */
-int kvm_cpu_has_interrupt(struct kvm_vcpu *vcpu);
+int kvm_s390_vcpu_has_irq(struct kvm_vcpu *vcpu, int exclude_stop);
 int psw_extint_disabled(struct kvm_vcpu *vcpu);
 void kvm_s390_destroy_adapters(struct kvm *kvm);
-int kvm_s390_si_ext_call_pending(struct kvm_vcpu *vcpu);
+int kvm_s390_ext_call_pending(struct kvm_vcpu *vcpu);
+extern struct kvm_device_ops kvm_flic_ops;
+int kvm_s390_is_stop_irq_pending(struct kvm_vcpu *vcpu);
+void kvm_s390_clear_stop_irq(struct kvm_vcpu *vcpu);
 
 /* implemented in guestdbg.c */
 void kvm_s390_backup_guest_per_regs(struct kvm_vcpu *vcpu);

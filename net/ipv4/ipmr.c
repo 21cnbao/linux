@@ -500,7 +500,7 @@ static struct net_device *ipmr_reg_vif(struct net *net, struct mr_table *mrt)
 	else
 		sprintf(name, "pimreg%u", mrt->id);
 
-	dev = alloc_netdev(0, name, reg_vif_setup);
+	dev = alloc_netdev(0, name, NET_NAME_UNKNOWN, reg_vif_setup);
 
 	if (dev == NULL)
 		return NULL;
@@ -2290,7 +2290,8 @@ static int ipmr_fill_mroute(struct mr_table *mrt, struct sk_buff *skb,
 	if (err < 0 && err != -ENOENT)
 		goto nla_put_failure;
 
-	return nlmsg_end(skb, nlh);
+	nlmsg_end(skb, nlh);
+	return 0;
 
 nla_put_failure:
 	nlmsg_cancel(skb, nlh);

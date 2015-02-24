@@ -234,6 +234,8 @@ static void option_instat_callback(struct urb *urb);
 
 #define QUALCOMM_VENDOR_ID			0x05C6
 
+#define SIERRA_VENDOR_ID			0x1199
+
 #define CMOTECH_VENDOR_ID			0x16d8
 #define CMOTECH_PRODUCT_6001			0x6001
 #define CMOTECH_PRODUCT_CMU_300			0x6002
@@ -269,14 +271,20 @@ static void option_instat_callback(struct urb *urb);
 #define TELIT_PRODUCT_DE910_DUAL		0x1010
 #define TELIT_PRODUCT_UE910_V2			0x1012
 #define TELIT_PRODUCT_LE920			0x1200
+#define TELIT_PRODUCT_LE910			0x1201
 
 /* ZTE PRODUCTS */
 #define ZTE_VENDOR_ID				0x19d2
 #define ZTE_PRODUCT_MF622			0x0001
 #define ZTE_PRODUCT_MF628			0x0015
 #define ZTE_PRODUCT_MF626			0x0031
-#define ZTE_PRODUCT_MC2718			0xffe8
 #define ZTE_PRODUCT_AC2726			0xfff1
+#define ZTE_PRODUCT_MG880			0xfffd
+#define ZTE_PRODUCT_CDMA_TECH			0xfffe
+#define ZTE_PRODUCT_AC8710T			0xffff
+#define ZTE_PRODUCT_MC2718			0xffe8
+#define ZTE_PRODUCT_AD3812			0xffeb
+#define ZTE_PRODUCT_MC2716			0xffed
 
 #define BENQ_VENDOR_ID				0x04a5
 #define BENQ_PRODUCT_H10			0x4068
@@ -357,6 +365,7 @@ static void option_instat_callback(struct urb *urb);
 
 /* Haier products */
 #define HAIER_VENDOR_ID				0x201e
+#define HAIER_PRODUCT_CE81B			0x10f8
 #define HAIER_PRODUCT_CE100			0x2009
 
 /* Cinterion (formerly Siemens) products */
@@ -494,18 +503,14 @@ static void option_instat_callback(struct urb *urb);
 #define INOVIA_VENDOR_ID			0x20a6
 #define INOVIA_SEW858				0x1105
 
-/* some devices interfaces need special handling due to a number of reasons */
-enum option_blacklist_reason {
-		OPTION_BLACKLIST_NONE = 0,
-		OPTION_BLACKLIST_SENDSETUP = 1,
-		OPTION_BLACKLIST_RESERVED_IF = 2
-};
+/* VIA Telecom */
+#define VIATELECOM_VENDOR_ID			0x15eb
+#define VIATELECOM_PRODUCT_CDS7			0x0001
 
-#define MAX_BL_NUM  8
 struct option_blacklist_info {
-	/* bitfield of interface numbers for OPTION_BLACKLIST_SENDSETUP */
+	/* bitmask of interface numbers blacklisted for send_setup */
 	const unsigned long sendsetup;
-	/* bitfield of interface numbers for OPTION_BLACKLIST_RESERVED_IF */
+	/* bitmask of interface numbers that are reserved */
 	const unsigned long reserved;
 };
 
@@ -527,8 +532,16 @@ static const struct option_blacklist_info zte_k3765_z_blacklist = {
 	.reserved = BIT(4),
 };
 
+static const struct option_blacklist_info zte_ad3812_z_blacklist = {
+	.sendsetup = BIT(0) | BIT(1) | BIT(2),
+};
+
 static const struct option_blacklist_info zte_mc2718_z_blacklist = {
 	.sendsetup = BIT(1) | BIT(2) | BIT(3) | BIT(4),
+};
+
+static const struct option_blacklist_info zte_mc2716_z_blacklist = {
+	.sendsetup = BIT(1) | BIT(2) | BIT(3),
 };
 
 static const struct option_blacklist_info huawei_cdc12_blacklist = {
@@ -572,9 +585,19 @@ static const struct option_blacklist_info zte_1255_blacklist = {
 	.reserved = BIT(3) | BIT(4),
 };
 
+static const struct option_blacklist_info telit_le910_blacklist = {
+	.sendsetup = BIT(0),
+	.reserved = BIT(1) | BIT(2),
+};
+
 static const struct option_blacklist_info telit_le920_blacklist = {
 	.sendsetup = BIT(0),
 	.reserved = BIT(1) | BIT(5),
+};
+
+static const struct option_blacklist_info sierra_mc73xx_blacklist = {
+	.sendsetup = BIT(0) | BIT(2),
+	.reserved = BIT(8) | BIT(10) | BIT(11),
 };
 
 static const struct usb_device_id option_ids[] = {
@@ -1070,9 +1093,12 @@ static const struct usb_device_id option_ids[] = {
 	{ USB_DEVICE_INTERFACE_CLASS(BANDRICH_VENDOR_ID, BANDRICH_PRODUCT_1012, 0xff) },
 	{ USB_DEVICE(KYOCERA_VENDOR_ID, KYOCERA_PRODUCT_KPC650) },
 	{ USB_DEVICE(KYOCERA_VENDOR_ID, KYOCERA_PRODUCT_KPC680) },
+	{ USB_DEVICE(QUALCOMM_VENDOR_ID, 0x6000)}, /* ZTE AC8700 */
 	{ USB_DEVICE(QUALCOMM_VENDOR_ID, 0x6613)}, /* Onda H600/ZTE MF330 */
 	{ USB_DEVICE(QUALCOMM_VENDOR_ID, 0x0023)}, /* ONYX 3G device */
 	{ USB_DEVICE(QUALCOMM_VENDOR_ID, 0x9000)}, /* SIMCom SIM5218 */
+	{ USB_DEVICE_INTERFACE_CLASS(SIERRA_VENDOR_ID, 0x68c0, 0xff),
+	  .driver_info = (kernel_ulong_t)&sierra_mc73xx_blacklist }, /* MC73xx */
 	{ USB_DEVICE(CMOTECH_VENDOR_ID, CMOTECH_PRODUCT_6001) },
 	{ USB_DEVICE(CMOTECH_VENDOR_ID, CMOTECH_PRODUCT_CMU_300) },
 	{ USB_DEVICE(CMOTECH_VENDOR_ID, CMOTECH_PRODUCT_6003),
@@ -1120,6 +1146,8 @@ static const struct usb_device_id option_ids[] = {
 	{ USB_DEVICE(TELIT_VENDOR_ID, TELIT_PRODUCT_CC864_SINGLE) },
 	{ USB_DEVICE(TELIT_VENDOR_ID, TELIT_PRODUCT_DE910_DUAL) },
 	{ USB_DEVICE(TELIT_VENDOR_ID, TELIT_PRODUCT_UE910_V2) },
+	{ USB_DEVICE(TELIT_VENDOR_ID, TELIT_PRODUCT_LE910),
+		.driver_info = (kernel_ulong_t)&telit_le910_blacklist },
 	{ USB_DEVICE(TELIT_VENDOR_ID, TELIT_PRODUCT_LE920),
 		.driver_info = (kernel_ulong_t)&telit_le920_blacklist },
 	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, ZTE_PRODUCT_MF622, 0xff, 0xff, 0xff) }, /* ZTE WCDMA products */
@@ -1543,14 +1571,27 @@ static const struct usb_device_id option_ids[] = {
 	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0xff92, 0xff, 0xff, 0xff) },
 	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0xff93, 0xff, 0xff, 0xff) },
 	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0xff94, 0xff, 0xff, 0xff) },
-
-	/* NOTE: most ZTE CDMA devices should be driven by zte_ev, not option */
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0xffec, 0xff, 0xff, 0xff) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0xffee, 0xff, 0xff, 0xff) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0xfff6, 0xff, 0xff, 0xff) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0xfff7, 0xff, 0xff, 0xff) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0xfff8, 0xff, 0xff, 0xff) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0xfff9, 0xff, 0xff, 0xff) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0xfffb, 0xff, 0xff, 0xff) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0xfffc, 0xff, 0xff, 0xff) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, ZTE_PRODUCT_MG880, 0xff, 0xff, 0xff) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, ZTE_PRODUCT_CDMA_TECH, 0xff, 0xff, 0xff) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, ZTE_PRODUCT_AC2726, 0xff, 0xff, 0xff) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, ZTE_PRODUCT_AC8710T, 0xff, 0xff, 0xff) },
 	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, ZTE_PRODUCT_MC2718, 0xff, 0xff, 0xff),
 	 .driver_info = (kernel_ulong_t)&zte_mc2718_z_blacklist },
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, ZTE_PRODUCT_AD3812, 0xff, 0xff, 0xff),
+	 .driver_info = (kernel_ulong_t)&zte_ad3812_z_blacklist },
+	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, ZTE_PRODUCT_MC2716, 0xff, 0xff, 0xff),
+	 .driver_info = (kernel_ulong_t)&zte_mc2716_z_blacklist },
 	{ USB_VENDOR_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0xff, 0x02, 0x01) },
 	{ USB_VENDOR_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0xff, 0x02, 0x05) },
 	{ USB_VENDOR_AND_INTERFACE_INFO(ZTE_VENDOR_ID, 0xff, 0x86, 0x10) },
-	{ USB_DEVICE_AND_INTERFACE_INFO(ZTE_VENDOR_ID, ZTE_PRODUCT_AC2726, 0xff, 0xff, 0xff) },
 
 	{ USB_DEVICE(BENQ_VENDOR_ID, BENQ_PRODUCT_H10) },
 	{ USB_DEVICE(DLINK_VENDOR_ID, DLINK_PRODUCT_DWM_652) },
@@ -1590,6 +1631,7 @@ static const struct usb_device_id option_ids[] = {
 	{ USB_DEVICE(LONGCHEER_VENDOR_ID, ZOOM_PRODUCT_4597) },
 	{ USB_DEVICE(LONGCHEER_VENDOR_ID, IBALL_3_5G_CONNECT) },
 	{ USB_DEVICE(HAIER_VENDOR_ID, HAIER_PRODUCT_CE100) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(HAIER_VENDOR_ID, HAIER_PRODUCT_CE81B, 0xff, 0xff, 0xff) },
 	/* Pirelli  */
 	{ USB_DEVICE_INTERFACE_CLASS(PIRELLI_VENDOR_ID, PIRELLI_PRODUCT_C100_1, 0xff) },
 	{ USB_DEVICE_INTERFACE_CLASS(PIRELLI_VENDOR_ID, PIRELLI_PRODUCT_C100_2, 0xff) },
@@ -1724,6 +1766,7 @@ static const struct usb_device_id option_ids[] = {
 	{ USB_DEVICE_AND_INTERFACE_INFO(0x07d1, 0x3e01, 0xff, 0xff, 0xff) }, /* D-Link DWM-152/C1 */
 	{ USB_DEVICE_AND_INTERFACE_INFO(0x07d1, 0x3e02, 0xff, 0xff, 0xff) }, /* D-Link DWM-156/C1 */
 	{ USB_DEVICE(INOVIA_VENDOR_ID, INOVIA_SEW858) },
+	{ USB_DEVICE(VIATELECOM_VENDOR_ID, VIATELECOM_PRODUCT_CDS7) },
 	{ } /* Terminating entry */
 };
 MODULE_DEVICE_TABLE(usb, option_ids);
@@ -1771,36 +1814,13 @@ struct option_private {
 
 module_usb_serial_driver(serial_drivers, option_ids);
 
-static bool is_blacklisted(const u8 ifnum, enum option_blacklist_reason reason,
-			   const struct option_blacklist_info *blacklist)
-{
-	unsigned long num;
-	const unsigned long *intf_list;
-
-	if (blacklist) {
-		if (reason == OPTION_BLACKLIST_SENDSETUP)
-			intf_list = &blacklist->sendsetup;
-		else if (reason == OPTION_BLACKLIST_RESERVED_IF)
-			intf_list = &blacklist->reserved;
-		else {
-			BUG_ON(reason);
-			return false;
-		}
-
-		for_each_set_bit(num, intf_list, MAX_BL_NUM + 1) {
-			if (num == ifnum)
-				return true;
-		}
-	}
-	return false;
-}
-
 static int option_probe(struct usb_serial *serial,
 			const struct usb_device_id *id)
 {
 	struct usb_interface_descriptor *iface_desc =
 				&serial->interface->cur_altsetting->desc;
 	struct usb_device_descriptor *dev_desc = &serial->dev->descriptor;
+	const struct option_blacklist_info *blacklist;
 
 	/* Never bind to the CD-Rom emulation interface	*/
 	if (iface_desc->bInterfaceClass == 0x08)
@@ -1811,10 +1831,9 @@ static int option_probe(struct usb_serial *serial,
 	 * the same class/subclass/protocol as the serial interfaces.  Look at
 	 * the Windows driver .INF files for reserved interface numbers.
 	 */
-	if (is_blacklisted(
-		iface_desc->bInterfaceNumber,
-		OPTION_BLACKLIST_RESERVED_IF,
-		(const struct option_blacklist_info *) id->driver_info))
+	blacklist = (void *)id->driver_info;
+	if (blacklist && test_bit(iface_desc->bInterfaceNumber,
+						&blacklist->reserved))
 		return -ENODEV;
 	/*
 	 * Don't bind network interface on Samsung GT-B3730, it is handled by
@@ -1825,8 +1844,8 @@ static int option_probe(struct usb_serial *serial,
 	    iface_desc->bInterfaceClass != USB_CLASS_CDC_DATA)
 		return -ENODEV;
 
-	/* Store device id so we can use it during attach. */
-	usb_set_serial_data(serial, (void *)id);
+	/* Store the blacklist info so we can use it during attach. */
+	usb_set_serial_data(serial, (void *)blacklist);
 
 	return 0;
 }
@@ -1834,7 +1853,7 @@ static int option_probe(struct usb_serial *serial,
 static int option_attach(struct usb_serial *serial)
 {
 	struct usb_interface_descriptor *iface_desc;
-	const struct usb_device_id *id;
+	const struct option_blacklist_info *blacklist;
 	struct usb_wwan_intf_private *data;
 	struct option_private *priv;
 
@@ -1848,16 +1867,16 @@ static int option_attach(struct usb_serial *serial)
 		return -ENOMEM;
 	}
 
-	/* Retrieve device id stored at probe. */
-	id = usb_get_serial_data(serial);
+	/* Retrieve blacklist info stored at probe. */
+	blacklist = usb_get_serial_data(serial);
+
 	iface_desc = &serial->interface->cur_altsetting->desc;
 
 	priv->bInterfaceNumber = iface_desc->bInterfaceNumber;
 	data->private = priv;
 
-	if (!is_blacklisted(iface_desc->bInterfaceNumber,
-			OPTION_BLACKLIST_SENDSETUP,
-			(struct option_blacklist_info *)id->driver_info)) {
+	if (!blacklist || !test_bit(iface_desc->bInterfaceNumber,
+						&blacklist->sendsetup)) {
 		data->send_setup = option_send_setup;
 	}
 	spin_lock_init(&data->susp_lock);
@@ -1916,6 +1935,8 @@ static void option_instat_callback(struct urb *urb)
 			dev_dbg(dev, "%s: type %x req %x\n", __func__,
 				req_pkt->bRequestType, req_pkt->bRequest);
 		}
+	} else if (status == -ENOENT || status == -ESHUTDOWN) {
+		dev_dbg(dev, "%s: urb stopped: %d\n", __func__, status);
 	} else
 		dev_err(dev, "%s: error %d\n", __func__, status);
 

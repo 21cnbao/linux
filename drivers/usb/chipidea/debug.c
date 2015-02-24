@@ -208,7 +208,7 @@ static const struct file_operations ci_requests_fops = {
 	.release	= single_release,
 };
 
-int ci_otg_show(struct seq_file *s, void *unused)
+static int ci_otg_show(struct seq_file *s, void *unused)
 {
 	struct ci_hdrc *ci = s->private;
 	struct otg_fsm *fsm;
@@ -220,7 +220,7 @@ int ci_otg_show(struct seq_file *s, void *unused)
 
 	/* ------ State ----- */
 	seq_printf(s, "OTG state: %s\n\n",
-		usb_otg_state_string(ci->transceiver->state));
+			usb_otg_state_string(ci->otg.state));
 
 	/* ------ State Machine Variables ----- */
 	seq_printf(s, "a_bus_drop: %d\n", fsm->a_bus_drop);
@@ -331,7 +331,7 @@ static const struct file_operations ci_role_fops = {
 	.release	= single_release,
 };
 
-int ci_registers_show(struct seq_file *s, void *unused)
+static int ci_registers_show(struct seq_file *s, void *unused)
 {
 	struct ci_hdrc *ci = s->private;
 	u32 tmp_reg;

@@ -1042,7 +1042,7 @@ static int __btrfs_update_delayed_inode(struct btrfs_trans_handle *trans,
 	int ret;
 
 	key.objectid = node->inode_id;
-	btrfs_set_key_type(&key, BTRFS_INODE_ITEM_KEY);
+	key.type = BTRFS_INODE_ITEM_KEY;
 	key.offset = 0;
 
 	if (test_bit(BTRFS_DELAYED_NODE_DEL_IREF, &node->flags))
@@ -1099,7 +1099,7 @@ err_out:
 search:
 	btrfs_release_path(path);
 
-	btrfs_set_key_type(&key, BTRFS_INODE_EXTREF_KEY);
+	key.type = BTRFS_INODE_EXTREF_KEY;
 	key.offset = -1;
 	ret = btrfs_search_slot(trans, root, &key, path, -1, 1);
 	if (ret < 0)
@@ -1395,8 +1395,8 @@ static int btrfs_wq_run_delayed_node(struct btrfs_delayed_root *delayed_root,
 		return -ENOMEM;
 
 	async_work->delayed_root = delayed_root;
-	btrfs_init_work(&async_work->work, btrfs_async_run_delayed_root,
-			NULL, NULL);
+	btrfs_init_work(&async_work->work, btrfs_delayed_meta_helper,
+			btrfs_async_run_delayed_root, NULL, NULL);
 	async_work->nr = nr;
 
 	btrfs_queue_work(root->fs_info->delayed_workers, &async_work->work);
@@ -1473,7 +1473,7 @@ int btrfs_insert_delayed_dir_index(struct btrfs_trans_handle *trans,
 	}
 
 	delayed_item->key.objectid = btrfs_ino(dir);
-	btrfs_set_key_type(&delayed_item->key, BTRFS_DIR_INDEX_KEY);
+	delayed_item->key.type = BTRFS_DIR_INDEX_KEY;
 	delayed_item->key.offset = index;
 
 	dir_item = (struct btrfs_dir_item *)delayed_item->data;
@@ -1542,7 +1542,7 @@ int btrfs_delete_delayed_dir_index(struct btrfs_trans_handle *trans,
 		return PTR_ERR(node);
 
 	item_key.objectid = btrfs_ino(dir);
-	btrfs_set_key_type(&item_key, BTRFS_DIR_INDEX_KEY);
+	item_key.type = BTRFS_DIR_INDEX_KEY;
 	item_key.offset = index;
 
 	ret = btrfs_delete_delayed_insertion_item(root, node, &item_key);
@@ -1755,27 +1755,31 @@ static void fill_stack_inode_item(struct btrfs_trans_handle *trans,
 	btrfs_set_stack_inode_flags(inode_item, BTRFS_I(inode)->flags);
 	btrfs_set_stack_inode_block_group(inode_item, 0);
 
-	btrfs_set_stack_timespec_sec(btrfs_inode_atime(inode_item),
+	btrfs_set_stack_timespec_sec(&inode_item->atime,
 				     inode->i_atime.tv_sec);
-	btrfs_set_stack_timespec_nsec(btrfs_inode_atime(inode_item),
+	btrfs_set_stack_timespec_nsec(&inode_item->atime,
 				      inode->i_atime.tv_nsec);
 
-	btrfs_set_stack_timespec_sec(btrfs_inode_mtime(inode_item),
+	btrfs_set_stack_timespec_sec(&inode_item->mtime,
 				     inode->i_mtime.tv_sec);
-	btrfs_set_stack_timespec_nsec(btrfs_inode_mtime(inode_item),
+	btrfs_set_stack_timespec_nsec(&inode_item->mtime,
 				      inode->i_mtime.tv_nsec);
 
-	btrfs_set_stack_timespec_sec(btrfs_inode_ctime(inode_item),
+	btrfs_set_stack_timespec_sec(&inode_item->ctime,
 				     inode->i_ctime.tv_sec);
-	btrfs_set_stack_timespec_nsec(btrfs_inode_ctime(inode_item),
+	btrfs_set_stack_timespec_nsec(&inode_item->ctime,
 				      inode->i_ctime.tv_nsec);
+
+	btrfs_set_stack_timespec_sec(&inode_item->otime,
+				     BTRFS_I(inode)->i_otime.tv_sec);
+	btrfs_set_stack_timespec_nsec(&inode_item->otime,
+				     BTRFS_I(inode)->i_otime.tv_nsec);
 }
 
 int btrfs_fill_inode(struct inode *inode, u32 *rdev)
 {
 	struct btrfs_delayed_node *delayed_node;
 	struct btrfs_inode_item *inode_item;
-	struct btrfs_timespec *tspec;
 
 	delayed_node = btrfs_get_delayed_node(inode);
 	if (!delayed_node)
@@ -1802,17 +1806,19 @@ int btrfs_fill_inode(struct inode *inode, u32 *rdev)
 	*rdev = btrfs_stack_inode_rdev(inode_item);
 	BTRFS_I(inode)->flags = btrfs_stack_inode_flags(inode_item);
 
-	tspec = btrfs_inode_atime(inode_item);
-	inode->i_atime.tv_sec = btrfs_stack_timespec_sec(tspec);
-	inode->i_atime.tv_nsec = btrfs_stack_timespec_nsec(tspec);
+	inode->i_atime.tv_sec = btrfs_stack_timespec_sec(&inode_item->atime);
+	inode->i_atime.tv_nsec = btrfs_stack_timespec_nsec(&inode_item->atime);
 
-	tspec = btrfs_inode_mtime(inode_item);
-	inode->i_mtime.tv_sec = btrfs_stack_timespec_sec(tspec);
-	inode->i_mtime.tv_nsec = btrfs_stack_timespec_nsec(tspec);
+	inode->i_mtime.tv_sec = btrfs_stack_timespec_sec(&inode_item->mtime);
+	inode->i_mtime.tv_nsec = btrfs_stack_timespec_nsec(&inode_item->mtime);
 
-	tspec = btrfs_inode_ctime(inode_item);
-	inode->i_ctime.tv_sec = btrfs_stack_timespec_sec(tspec);
-	inode->i_ctime.tv_nsec = btrfs_stack_timespec_nsec(tspec);
+	inode->i_ctime.tv_sec = btrfs_stack_timespec_sec(&inode_item->ctime);
+	inode->i_ctime.tv_nsec = btrfs_stack_timespec_nsec(&inode_item->ctime);
+
+	BTRFS_I(inode)->i_otime.tv_sec =
+		btrfs_stack_timespec_sec(&inode_item->otime);
+	BTRFS_I(inode)->i_otime.tv_nsec =
+		btrfs_stack_timespec_nsec(&inode_item->otime);
 
 	inode->i_generation = BTRFS_I(inode)->generation;
 	BTRFS_I(inode)->index_cnt = (u64)-1;
@@ -1856,6 +1862,14 @@ release_node:
 int btrfs_delayed_delete_inode_ref(struct inode *inode)
 {
 	struct btrfs_delayed_node *delayed_node;
+
+	/*
+	 * we don't do delayed inode updates during log recovery because it
+	 * leads to enospc problems.  This means we also can't do
+	 * delayed inode refs
+	 */
+	if (BTRFS_I(inode)->root->fs_info->log_root_recovering)
+		return -EAGAIN;
 
 	delayed_node = btrfs_get_or_create_delayed_node(inode);
 	if (IS_ERR(delayed_node))

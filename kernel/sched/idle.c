@@ -7,6 +7,7 @@
 #include <linux/tick.h>
 #include <linux/mm.h>
 #include <linux/stackprotector.h>
+#include <linux/suspend.h>
 
 #include <asm/tlb.h>
 
@@ -47,7 +48,8 @@ static inline int cpu_idle_poll(void)
 	rcu_idle_enter();
 	trace_cpu_idle_rcuidle(0, smp_processor_id());
 	local_irq_enable();
-	while (!tif_need_resched())
+	while (!tif_need_resched() &&
+		(cpu_idle_force_poll || tick_check_broadcast_expired()))
 		cpu_relax();
 	trace_cpu_idle_rcuidle(PWR_EVENT_EXIT, smp_processor_id());
 	rcu_idle_exit();
@@ -79,7 +81,7 @@ static void cpuidle_idle_call(void)
 	struct cpuidle_device *dev = __this_cpu_read(cpuidle_devices);
 	struct cpuidle_driver *drv = cpuidle_get_cpu_driver(dev);
 	int next_state, entered_state;
-	bool broadcast;
+	unsigned int broadcast;
 
 	/*
 	 * Check if the idle task must be rescheduled. If it is the
@@ -102,6 +104,21 @@ static void cpuidle_idle_call(void)
 	 * step to the grace period
 	 */
 	rcu_idle_enter();
+
+	/*
+	 * Suspend-to-idle ("freeze") is a system state in which all user space
+	 * has been frozen, all I/O devices have been suspended and the only
+	 * activity happens here and in iterrupts (if any).  In that case bypass
+	 * the cpuidle governor and go stratight for the deepest idle state
+	 * available.  Possibly also suspend the local tick and the entire
+	 * timekeeping to prevent timer interrupts from kicking us out of idle
+	 * until a proper wakeup interrupt happens.
+	 */
+	if (idle_should_freeze()) {
+		cpuidle_enter_freeze();
+		local_irq_enable();
+		goto exit_idle;
+	}
 
 	/*
 	 * Ask the cpuidle framework to choose a convenient idle state.
@@ -135,7 +152,7 @@ use_default:
 		goto exit_idle;
 	}
 
-	broadcast = !!(drv->states[next_state].flags & CPUIDLE_FLAG_TIMER_STOP);
+	broadcast = drv->states[next_state].flags & CPUIDLE_FLAG_TIMER_STOP;
 
 	/*
 	 * Tell the time framework to switch to a broadcast timer
@@ -147,7 +164,8 @@ use_default:
 	    clockevents_notify(CLOCK_EVT_NOTIFY_BROADCAST_ENTER, &dev->cpu))
 		goto use_default;
 
-	trace_cpu_idle_rcuidle(next_state, dev->cpu);
+	/* Take note of the planned idle state. */
+	idle_set_state(this_rq(), &drv->states[next_state]);
 
 	/*
 	 * Enter the idle state previously returned by the governor decision.
@@ -156,7 +174,8 @@ use_default:
 	 */
 	entered_state = cpuidle_enter(drv, dev, next_state);
 
-	trace_cpu_idle_rcuidle(PWR_EVENT_EXIT, dev->cpu);
+	/* The cpu is no longer idle or about to enter idle. */
+	idle_set_state(this_rq(), NULL);
 
 	if (broadcast)
 		clockevents_notify(CLOCK_EVT_NOTIFY_BROADCAST_EXIT, &dev->cpu);

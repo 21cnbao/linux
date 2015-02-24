@@ -93,6 +93,7 @@ static const struct sunxi_pinctrl_desc sun6i_a31_r_pinctrl_data = {
 	.pins = sun6i_a31_r_pins,
 	.npins = ARRAY_SIZE(sun6i_a31_r_pins),
 	.pin_base = PL_BASE,
+	.irq_banks = 2,
 };
 
 static int sun6i_a31_r_pinctrl_probe(struct platform_device *pdev)
@@ -129,7 +130,6 @@ static struct platform_driver sun6i_a31_r_pinctrl_driver = {
 	.probe	= sun6i_a31_r_pinctrl_probe,
 	.driver	= {
 		.name		= "sun6i-a31-r-pinctrl",
-		.owner		= THIS_MODULE,
 		.of_match_table	= sun6i_a31_r_pinctrl_match,
 	},
 };

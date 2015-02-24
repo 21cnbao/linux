@@ -46,6 +46,7 @@
 #include <asm/fpu.h>
 #include <asm/fpu_emulator.h>
 #include <asm/idle.h>
+#include <asm/mips-r2-to-r6-emul.h>
 #include <asm/mipsregs.h>
 #include <asm/mipsmtregs.h>
 #include <asm/module.h>
@@ -90,6 +91,7 @@ extern asmlinkage void handle_mt(void);
 extern asmlinkage void handle_dsp(void);
 extern asmlinkage void handle_mcheck(void);
 extern asmlinkage void handle_reserved(void);
+extern void tlb_do_page_fault_0(void);
 
 void (*board_be_init)(void);
 int (*board_be_handler)(struct pt_regs *regs, int is_fixup);
@@ -723,6 +725,50 @@ int process_fpemu_return(int sig, void __user *fault_addr)
 	}
 }
 
+static int simulate_fp(struct pt_regs *regs, unsigned int opcode,
+		       unsigned long old_epc, unsigned long old_ra)
+{
+	union mips_instruction inst = { .word = opcode };
+	void __user *fault_addr = NULL;
+	int sig;
+
+	/* If it's obviously not an FP instruction, skip it */
+	switch (inst.i_format.opcode) {
+	case cop1_op:
+	case cop1x_op:
+	case lwc1_op:
+	case ldc1_op:
+	case swc1_op:
+	case sdc1_op:
+		break;
+
+	default:
+		return -1;
+	}
+
+	/*
+	 * do_ri skipped over the instruction via compute_return_epc, undo
+	 * that for the FPU emulator.
+	 */
+	regs->cp0_epc = old_epc;
+	regs->regs[31] = old_ra;
+
+	/* Save the FP context to struct thread_struct */
+	lose_fpu(1);
+
+	/* Run the emulator */
+	sig = fpu_emulator_cop1Handler(regs, &current->thread.fpu, 1,
+				       &fault_addr);
+
+	/* If something went wrong, signal */
+	process_fpemu_return(sig, fault_addr);
+
+	/* Restore the hardware register state */
+	own_fpu(1);
+
+	return 0;
+}
+
 /*
  * XXX Delayed fp exceptions when doing a lazy ctx switch XXX
  */
@@ -792,7 +838,7 @@ out:
 	exception_exit(prev_state);
 }
 
-static void do_trap_or_bp(struct pt_regs *regs, unsigned int code,
+void do_trap_or_bp(struct pt_regs *regs, unsigned int code,
 	const char *str)
 {
 	siginfo_t info;
@@ -982,7 +1028,34 @@ asmlinkage void do_ri(struct pt_regs *regs)
 	unsigned int opcode = 0;
 	int status = -1;
 
+	/*
+	 * Avoid any kernel code. Just emulate the R2 instruction
+	 * as quickly as possible.
+	 */
+	if (mipsr2_emulation && cpu_has_mips_r6 &&
+	    likely(user_mode(regs))) {
+		if (likely(get_user(opcode, epc) >= 0)) {
+			status = mipsr2_decoder(regs, opcode);
+			switch (status) {
+			case 0:
+			case SIGEMT:
+				task_thread_info(current)->r2_emul_return = 1;
+				return;
+			case SIGILL:
+				goto no_r2_instr;
+			default:
+				process_fpemu_return(status,
+						     &current->thread.cp0_baduaddr);
+				task_thread_info(current)->r2_emul_return = 1;
+				return;
+			}
+		}
+	}
+
+no_r2_instr:
+
 	prev_state = exception_enter();
+
 	if (notify_die(DIE_RI, "RI Fault", regs, 0, regs_to_trapnr(regs),
 		       SIGILL) == NOTIFY_STOP)
 		goto out;
@@ -1015,6 +1088,9 @@ asmlinkage void do_ri(struct pt_regs *regs)
 
 		if (status < 0)
 			status = simulate_sync(regs, opcode);
+
+		if (status < 0)
+			status = simulate_fp(regs, opcode, old_epc, old31);
 	}
 
 	if (status < 0)
@@ -1086,15 +1162,40 @@ static int default_cu2_call(struct notifier_block *nfb, unsigned long action,
 	return NOTIFY_OK;
 }
 
+static int wait_on_fp_mode_switch(atomic_t *p)
+{
+	/*
+	 * The FP mode for this task is currently being switched. That may
+	 * involve modifications to the format of this tasks FP context which
+	 * make it unsafe to proceed with execution for the moment. Instead,
+	 * schedule some other task.
+	 */
+	schedule();
+	return 0;
+}
+
 static int enable_restore_fp_context(int msa)
 {
-	int err, was_fpu_owner;
+	int err, was_fpu_owner, prior_msa;
+
+	/*
+	 * If an FP mode switch is currently underway, wait for it to
+	 * complete before proceeding.
+	 */
+	wait_on_atomic_t(&current->mm->context.fp_mode_switching,
+			 wait_on_fp_mode_switch, TASK_KILLABLE);
 
 	if (!used_math()) {
 		/* First time FP context user. */
+		preempt_disable();
 		err = init_fpu();
-		if (msa && !err)
+		if (msa && !err) {
 			enable_msa();
+			_init_msa_upper();
+			set_thread_flag(TIF_USEDMSA);
+			set_thread_flag(TIF_MSA_CTX_LIVE);
+		}
+		preempt_enable();
 		if (!err)
 			set_used_math();
 		return err;
@@ -1134,10 +1235,11 @@ static int enable_restore_fp_context(int msa)
 	 * This task is using or has previously used MSA. Thus we require
 	 * that Status.FR == 1.
 	 */
+	preempt_disable();
 	was_fpu_owner = is_fpu_owner();
-	err = own_fpu(0);
+	err = own_fpu_inatomic(0);
 	if (err)
-		return err;
+		goto out;
 
 	enable_msa();
 	write_msa_csr(current->thread.fpu.msacsr);
@@ -1146,13 +1248,43 @@ static int enable_restore_fp_context(int msa)
 	/*
 	 * If this is the first time that the task is using MSA and it has
 	 * previously used scalar FP in this time slice then we already nave
-	 * FP context which we shouldn't clobber.
+	 * FP context which we shouldn't clobber. We do however need to clear
+	 * the upper 64b of each vector register so that this task has no
+	 * opportunity to see data left behind by another.
 	 */
-	if (!test_and_set_thread_flag(TIF_MSA_CTX_LIVE) && was_fpu_owner)
-		return 0;
+	prior_msa = test_and_set_thread_flag(TIF_MSA_CTX_LIVE);
+	if (!prior_msa && was_fpu_owner) {
+		_init_msa_upper();
 
-	/* We need to restore the vector context. */
-	restore_msa(current);
+		goto out;
+	}
+
+	if (!prior_msa) {
+		/*
+		 * Restore the least significant 64b of each vector register
+		 * from the existing scalar FP context.
+		 */
+		_restore_fp(current);
+
+		/*
+		 * The task has not formerly used MSA, so clear the upper 64b
+		 * of each vector register such that it cannot see data left
+		 * behind by another task.
+		 */
+		_init_msa_upper();
+	} else {
+		/* We need to restore the vector context. */
+		restore_msa(current);
+
+		/* Restore the scalar FP control & status register */
+		if (!was_fpu_owner)
+			write_32bit_cp1_register(CP1_STATUS,
+						 current->thread.fpu.fcr31);
+	}
+
+out:
+	preempt_enable();
+
 	return 0;
 }
 
@@ -1343,12 +1475,19 @@ asmlinkage void do_mcheck(struct pt_regs *regs)
 	show_regs(regs);
 
 	if (multi_match) {
-		printk("Index	: %0x\n", read_c0_index());
-		printk("Pagemask: %0x\n", read_c0_pagemask());
-		printk("EntryHi : %0*lx\n", field, read_c0_entryhi());
-		printk("EntryLo0: %0*lx\n", field, read_c0_entrylo0());
-		printk("EntryLo1: %0*lx\n", field, read_c0_entrylo1());
-		printk("\n");
+		pr_err("Index	: %0x\n", read_c0_index());
+		pr_err("Pagemask: %0x\n", read_c0_pagemask());
+		pr_err("EntryHi : %0*lx\n", field, read_c0_entryhi());
+		pr_err("EntryLo0: %0*lx\n", field, read_c0_entrylo0());
+		pr_err("EntryLo1: %0*lx\n", field, read_c0_entrylo1());
+		pr_err("Wired   : %0x\n", read_c0_wired());
+		pr_err("Pagegrain: %0x\n", read_c0_pagegrain());
+		if (cpu_has_htw) {
+			pr_err("PWField : %0*lx\n", field, read_c0_pwfield());
+			pr_err("PWSize  : %0*lx\n", field, read_c0_pwsize());
+			pr_err("PWCtl   : %0x\n", read_c0_pwctl());
+		}
+		pr_err("\n");
 		dump_tlb_all();
 	}
 
@@ -1449,6 +1588,7 @@ static inline void parity_protection_init(void)
 	case CPU_INTERAPTIV:
 	case CPU_PROAPTIV:
 	case CPU_P5600:
+	case CPU_QEMU_GENERIC:
 		{
 #define ERRCTL_PE	0x80000000
 #define ERRCTL_L2P	0x00800000
@@ -1538,7 +1678,7 @@ asmlinkage void cache_parity_error(void)
 	printk("Decoded c0_cacheerr: %s cache fault in %s reference.\n",
 	       reg_val & (1<<30) ? "secondary" : "primary",
 	       reg_val & (1<<31) ? "data" : "insn");
-	if (cpu_has_mips_r2 &&
+	if ((cpu_has_mips_r2_r6) &&
 	    ((current_cpu_data.processor_id & 0xff0000) == PRID_COMP_MIPS)) {
 		pr_err("Error bits: %s%s%s%s%s%s%s%s\n",
 			reg_val & (1<<29) ? "ED " : "",
@@ -1578,7 +1718,7 @@ asmlinkage void do_ftlb(void)
 	unsigned int reg_val;
 
 	/* For the moment, report the problem and hang. */
-	if (cpu_has_mips_r2 &&
+	if ((cpu_has_mips_r2_r6) &&
 	    ((current_cpu_data.processor_id & 0xff0000) == PRID_COMP_MIPS)) {
 		pr_err("FTLB error exception, cp0_ecc=0x%08x:\n",
 		       read_c0_ecc());
@@ -1867,7 +2007,7 @@ static void configure_hwrena(void)
 {
 	unsigned int hwrena = cpu_hwrena_impl_bits;
 
-	if (cpu_has_mips_r2)
+	if (cpu_has_mips_r2_r6)
 		hwrena |= 0x0000000f;
 
 	if (!noulri && cpu_has_userlocal)
@@ -1911,7 +2051,7 @@ void per_cpu_trap_init(bool is_boot_cpu)
 	 *  o read IntCtl.IPTI to determine the timer interrupt
 	 *  o read IntCtl.IPPCI to determine the performance counter interrupt
 	 */
-	if (cpu_has_mips_r2) {
+	if (cpu_has_mips_r2_r6) {
 		cp0_compare_irq_shift = CAUSEB_TI - CAUSEB_IP;
 		cp0_compare_irq = (read_c0_intctl() >> INTCTLB_IPTI) & 7;
 		cp0_perfcount_irq = (read_c0_intctl() >> INTCTLB_IPPCI) & 7;
@@ -2002,7 +2142,7 @@ void __init trap_init(void)
 #else
         ebase = CKSEG0;
 #endif
-		if (cpu_has_mips_r2)
+		if (cpu_has_mips_r2_r6)
 			ebase += (read_c0_ebase() & 0x3ffff000);
 	}
 
@@ -2114,6 +2254,12 @@ void __init trap_init(void)
 		set_except_vector(15, handle_fpe);
 
 	set_except_vector(16, handle_ftlb);
+
+	if (cpu_has_rixiex) {
+		set_except_vector(19, tlb_do_page_fault_0);
+		set_except_vector(20, tlb_do_page_fault_0);
+	}
+
 	set_except_vector(21, handle_msa);
 	set_except_vector(22, handle_mdmx);
 

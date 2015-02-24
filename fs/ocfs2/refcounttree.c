@@ -2428,8 +2428,6 @@ static int ocfs2_calc_refcount_meta_credits(struct super_block *sb,
 			get_bh(prev_bh);
 		}
 
-		rb = (struct ocfs2_refcount_block *)ref_leaf_bh->b_data;
-
 		trace_ocfs2_calc_refcount_meta_credits_iterate(
 				recs_add, (unsigned long long)cpos, clusters,
 				(unsigned long long)le64_to_cpu(rec.r_cpos),
@@ -3109,7 +3107,7 @@ static int ocfs2_clear_ext_refcount(handle_t *handle,
 	el = path_leaf_el(path);
 
 	index = ocfs2_search_extent_list(el, cpos);
-	if (index == -1 || index >= le16_to_cpu(el->l_next_free_rec)) {
+	if (index == -1) {
 		ocfs2_error(sb,
 			    "Inode %llu has an extent at cpos %u which can no "
 			    "longer be found.\n",

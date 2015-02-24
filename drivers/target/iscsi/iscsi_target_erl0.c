@@ -21,7 +21,8 @@
 #include <target/target_core_base.h>
 #include <target/target_core_fabric.h>
 
-#include "iscsi_target_core.h"
+#include <target/iscsi/iscsi_target_core.h>
+#include <target/iscsi/iscsi_transport.h>
 #include "iscsi_target_seq_pdu_list.h"
 #include "iscsi_target_tq.h"
 #include "iscsi_target_erl0.h"
@@ -345,7 +346,6 @@ static int iscsit_dataout_check_datasn(
 	struct iscsi_cmd *cmd,
 	unsigned char *buf)
 {
-	int dump = 0, recovery = 0;
 	u32 data_sn = 0;
 	struct iscsi_conn *conn = cmd->conn;
 	struct iscsi_data *hdr = (struct iscsi_data *) buf;
@@ -370,13 +370,11 @@ static int iscsit_dataout_check_datasn(
 		pr_err("Command ITT: 0x%08x, received DataSN: 0x%08x"
 			" higher than expected 0x%08x.\n", cmd->init_task_tag,
 				be32_to_cpu(hdr->datasn), data_sn);
-		recovery = 1;
 		goto recover;
 	} else if (be32_to_cpu(hdr->datasn) < data_sn) {
 		pr_err("Command ITT: 0x%08x, received DataSN: 0x%08x"
 			" lower than expected 0x%08x, discarding payload.\n",
 			cmd->init_task_tag, be32_to_cpu(hdr->datasn), data_sn);
-		dump = 1;
 		goto dump;
 	}
 
@@ -392,8 +390,7 @@ dump:
 	if (iscsit_dump_data_payload(conn, payload_length, 1) < 0)
 		return DATAOUT_CANNOT_RECOVER;
 
-	return (recovery || dump) ? DATAOUT_WITHIN_COMMAND_RECOVERY :
-				DATAOUT_NORMAL;
+	return DATAOUT_WITHIN_COMMAND_RECOVERY;
 }
 
 static int iscsit_dataout_pre_datapduinorder_yes(
@@ -943,7 +940,8 @@ void iscsit_take_action_for_connection_exit(struct iscsi_conn *conn)
 
 	if (conn->conn_state == TARG_CONN_STATE_IN_LOGOUT) {
 		spin_unlock_bh(&conn->state_lock);
-		iscsit_close_connection(conn);
+		if (conn->conn_transport->transport_type == ISCSI_TCP)
+			iscsit_close_connection(conn);
 		return;
 	}
 

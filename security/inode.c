@@ -74,7 +74,7 @@ static struct file_system_type fs_type = {
  * pointer must be passed to the securityfs_remove() function when the file is
  * to be removed (no automatic cleanup happens if your module is unloaded,
  * you are responsible here).  If an error occurs, the function will return
- * the erorr value (via ERR_PTR).
+ * the error value (via ERR_PTR).
  *
  * If securityfs is not enabled in the kernel, the value %-ENODEV is
  * returned.
@@ -203,7 +203,7 @@ void securityfs_remove(struct dentry *dentry)
 	mutex_lock(&parent->d_inode->i_mutex);
 	if (positive(dentry)) {
 		if (dentry->d_inode) {
-			if (S_ISDIR(dentry->d_inode->i_mode))
+			if (d_is_dir(dentry))
 				simple_rmdir(parent->d_inode, dentry);
 			else
 				simple_unlink(parent->d_inode, dentry);

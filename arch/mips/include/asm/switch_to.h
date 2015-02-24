@@ -75,9 +75,12 @@ do {									\
 #endif
 
 #define __clear_software_ll_bit()					\
-do {									\
-	if (!__builtin_constant_p(cpu_has_llsc) || !cpu_has_llsc)	\
-		ll_bit = 0;						\
+do {	if (cpu_has_rw_llb) {						\
+		write_c0_lladdr(0);					\
+	} else {							\
+		if (!__builtin_constant_p(cpu_has_llsc) || !cpu_has_llsc)\
+			ll_bit = 0;					\
+	}								\
 } while (0)
 
 #define switch_to(prev, next, last)					\
@@ -92,7 +95,7 @@ do {									\
 			KSTK_STATUS(prev) &= ~ST0_CU2;			\
 		__c0_stat = read_c0_status();				\
 		write_c0_status(__c0_stat | ST0_CU2);			\
-		cop2_save(&prev->thread.cp2);				\
+		cop2_save(prev);					\
 		write_c0_status(__c0_stat & ~ST0_CU2);			\
 	}								\
 	__clear_software_ll_bit();					\
@@ -111,7 +114,7 @@ do {									\
 			(KSTK_STATUS(current) & ST0_CU2)) {		\
 		__c0_stat = read_c0_status();				\
 		write_c0_status(__c0_stat | ST0_CU2);			\
-		cop2_restore(&current->thread.cp2);			\
+		cop2_restore(current);					\
 		write_c0_status(__c0_stat & ~ST0_CU2);			\
 	}								\
 	if (cpu_has_dsp)						\

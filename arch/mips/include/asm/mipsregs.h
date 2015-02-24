@@ -265,6 +265,7 @@
 #define PG_XIE		(_ULCAST_(1) <<	 30)
 #define PG_ELPA		(_ULCAST_(1) <<	 29)
 #define PG_ESP		(_ULCAST_(1) <<	 28)
+#define PG_IEC		(_ULCAST_(1) <<  27)
 
 /*
  * R4x00 interrupt enable / cause bits
@@ -630,7 +631,6 @@
 #define MIPS_CONF4_MMUSIZEEXT_SHIFT	(0)
 #define MIPS_CONF4_MMUSIZEEXT	(_ULCAST_(255) << 0)
 #define MIPS_CONF4_FTLBSETS_SHIFT	(0)
-#define MIPS_CONF4_FTLBSETS_SHIFT	(0)
 #define MIPS_CONF4_FTLBSETS	(_ULCAST_(15) << MIPS_CONF4_FTLBSETS_SHIFT)
 #define MIPS_CONF4_FTLBWAYS_SHIFT	(4)
 #define MIPS_CONF4_FTLBWAYS	(_ULCAST_(15) << MIPS_CONF4_FTLBWAYS_SHIFT)
@@ -652,6 +652,11 @@
 
 #define MIPS_CONF5_NF		(_ULCAST_(1) << 0)
 #define MIPS_CONF5_UFR		(_ULCAST_(1) << 2)
+#define MIPS_CONF5_MRP		(_ULCAST_(1) << 3)
+#define MIPS_CONF5_LLB		(_ULCAST_(1) << 4)
+#define MIPS_CONF5_MVH		(_ULCAST_(1) << 5)
+#define MIPS_CONF5_FRE		(_ULCAST_(1) << 8)
+#define MIPS_CONF5_UFE		(_ULCAST_(1) << 9)
 #define MIPS_CONF5_MSAEN	(_ULCAST_(1) << 27)
 #define MIPS_CONF5_EVA		(_ULCAST_(1) << 28)
 #define MIPS_CONF5_CV		(_ULCAST_(1) << 29)
@@ -660,6 +665,8 @@
 #define MIPS_CONF6_SYND		(_ULCAST_(1) << 13)
 /* proAptiv FTLB on/off bit */
 #define MIPS_CONF6_FTLBEN	(_ULCAST_(1) << 15)
+/* FTLB probability bits */
+#define MIPS_CONF6_FTLBP_SHIFT	(16)
 
 #define MIPS_CONF7_WII		(_ULCAST_(1) << 31)
 
@@ -667,6 +674,12 @@
 
 #define MIPS_CONF7_IAR		(_ULCAST_(1) << 10)
 #define MIPS_CONF7_AR		(_ULCAST_(1) << 16)
+
+/* MAAR bit definitions */
+#define MIPS_MAAR_ADDR		((BIT_ULL(BITS_PER_LONG - 12) - 1) << 12)
+#define MIPS_MAAR_ADDR_SHIFT	12
+#define MIPS_MAAR_S		(_ULCAST_(1) << 1)
+#define MIPS_MAAR_V		(_ULCAST_(1) << 0)
 
 /*  EntryHI bit definition */
 #define MIPS_ENTRYHI_EHINV	(_ULCAST_(1) << 10)
@@ -685,6 +698,7 @@
 #define MIPS_FPIR_W		(_ULCAST_(1) << 20)
 #define MIPS_FPIR_L		(_ULCAST_(1) << 21)
 #define MIPS_FPIR_F64		(_ULCAST_(1) << 22)
+#define MIPS_FPIR_FREP		(_ULCAST_(1) << 29)
 
 /*
  * Bits in the MIPS32 Memory Segmentation registers.
@@ -705,6 +719,37 @@
 #define MIPS_SEGCFG_MSK		_ULCAST_(2)
 #define MIPS_SEGCFG_MK		_ULCAST_(1)
 #define MIPS_SEGCFG_UK		_ULCAST_(0)
+
+#define MIPS_PWFIELD_GDI_SHIFT	24
+#define MIPS_PWFIELD_GDI_MASK	0x3f000000
+#define MIPS_PWFIELD_UDI_SHIFT	18
+#define MIPS_PWFIELD_UDI_MASK	0x00fc0000
+#define MIPS_PWFIELD_MDI_SHIFT	12
+#define MIPS_PWFIELD_MDI_MASK	0x0003f000
+#define MIPS_PWFIELD_PTI_SHIFT	6
+#define MIPS_PWFIELD_PTI_MASK	0x00000fc0
+#define MIPS_PWFIELD_PTEI_SHIFT	0
+#define MIPS_PWFIELD_PTEI_MASK	0x0000003f
+
+#define MIPS_PWSIZE_GDW_SHIFT	24
+#define MIPS_PWSIZE_GDW_MASK	0x3f000000
+#define MIPS_PWSIZE_UDW_SHIFT	18
+#define MIPS_PWSIZE_UDW_MASK	0x00fc0000
+#define MIPS_PWSIZE_MDW_SHIFT	12
+#define MIPS_PWSIZE_MDW_MASK	0x0003f000
+#define MIPS_PWSIZE_PTW_SHIFT	6
+#define MIPS_PWSIZE_PTW_MASK	0x00000fc0
+#define MIPS_PWSIZE_PTEW_SHIFT	0
+#define MIPS_PWSIZE_PTEW_MASK	0x0000003f
+
+#define MIPS_PWCTL_PWEN_SHIFT	31
+#define MIPS_PWCTL_PWEN_MASK	0x80000000
+#define MIPS_PWCTL_DPH_SHIFT	7
+#define MIPS_PWCTL_DPH_MASK	0x00000080
+#define MIPS_PWCTL_HUGEPG_SHIFT	6
+#define MIPS_PWCTL_HUGEPG_MASK	0x00000060
+#define MIPS_PWCTL_PSN_SHIFT	0
+#define MIPS_PWCTL_PSN_MASK	0x0000003f
 
 #ifndef __ASSEMBLY__
 
@@ -954,6 +999,39 @@ do {									\
 	local_irq_restore(__flags);					\
 } while (0)
 
+#define __readx_32bit_c0_register(source)				\
+({									\
+	unsigned int __res;						\
+									\
+	__asm__ __volatile__(						\
+	"	.set	push					\n"	\
+	"	.set	noat					\n"	\
+	"	.set	mips32r2				\n"	\
+	"	.insn						\n"	\
+	"	# mfhc0 $1, %1					\n"	\
+	"	.word	(0x40410000 | ((%1 & 0x1f) << 11))	\n"	\
+	"	move	%0, $1					\n"	\
+	"	.set	pop					\n"	\
+	: "=r" (__res)							\
+	: "i" (source));						\
+	__res;								\
+})
+
+#define __writex_32bit_c0_register(register, value)			\
+do {									\
+	__asm__ __volatile__(						\
+	"	.set	push					\n"	\
+	"	.set	noat					\n"	\
+	"	.set	mips32r2				\n"	\
+	"	move	$1, %0					\n"	\
+	"	# mthc0 $1, %1					\n"	\
+	"	.insn						\n"	\
+	"	.word	(0x40c10000 | ((%1 & 0x1f) << 11))	\n"	\
+	"	.set	pop					\n"	\
+	:								\
+	: "r" (value), "i" (register));					\
+} while (0)
+
 #define read_c0_index()		__read_32bit_c0_register($0, 0)
 #define write_c0_index(val)	__write_32bit_c0_register($0, 0, val)
 
@@ -963,8 +1041,14 @@ do {									\
 #define read_c0_entrylo0()	__read_ulong_c0_register($2, 0)
 #define write_c0_entrylo0(val)	__write_ulong_c0_register($2, 0, val)
 
+#define readx_c0_entrylo0()	__readx_32bit_c0_register(2)
+#define writex_c0_entrylo0(val)	__writex_32bit_c0_register(2, val)
+
 #define read_c0_entrylo1()	__read_ulong_c0_register($3, 0)
 #define write_c0_entrylo1(val)	__write_ulong_c0_register($3, 0, val)
+
+#define readx_c0_entrylo1()	__readx_32bit_c0_register(3)
+#define writex_c0_entrylo1(val)	__writex_32bit_c0_register(3, val)
 
 #define read_c0_conf()		__read_32bit_c0_register($3, 0)
 #define write_c0_conf(val)	__write_32bit_c0_register($3, 0, val)
@@ -1043,6 +1127,13 @@ do {									\
 #define write_c0_config5(val)	__write_32bit_c0_register($16, 5, val)
 #define write_c0_config6(val)	__write_32bit_c0_register($16, 6, val)
 #define write_c0_config7(val)	__write_32bit_c0_register($16, 7, val)
+
+#define read_c0_lladdr()	__read_ulong_c0_register($17, 0)
+#define write_c0_lladdr(val)	__write_ulong_c0_register($17, 0, val)
+#define read_c0_maar()		__read_ulong_c0_register($17, 1)
+#define write_c0_maar(val)	__write_ulong_c0_register($17, 1, val)
+#define read_c0_maari()		__read_32bit_c0_register($17, 2)
+#define write_c0_maari(val)	__write_32bit_c0_register($17, 2, val)
 
 /*
  * The WatchLo register.  There may be up to 8 of them.
@@ -1201,6 +1292,19 @@ do {									\
 #define read_c0_segctl2()	__read_32bit_c0_register($5, 4)
 #define write_c0_segctl2(val)	__write_32bit_c0_register($5, 4, val)
 
+/* Hardware Page Table Walker */
+#define read_c0_pwbase()	__read_ulong_c0_register($5, 5)
+#define write_c0_pwbase(val)	__write_ulong_c0_register($5, 5, val)
+
+#define read_c0_pwfield()	__read_ulong_c0_register($5, 6)
+#define write_c0_pwfield(val)	__write_ulong_c0_register($5, 6, val)
+
+#define read_c0_pwsize()	__read_ulong_c0_register($5, 7)
+#define write_c0_pwsize(val)	__write_ulong_c0_register($5, 7, val)
+
+#define read_c0_pwctl()		__read_32bit_c0_register($6, 6)
+#define write_c0_pwctl(val)	__write_32bit_c0_register($6, 6, val)
+
 /* Cavium OCTEON (cnMIPS) */
 #define read_c0_cvmcount()	__read_ulong_c0_register($9, 6)
 #define write_c0_cvmcount(val)	__write_ulong_c0_register($9, 6, val)
@@ -1268,7 +1372,7 @@ do {									\
 /*
  * Macros to access the floating point coprocessor control registers
  */
-#define read_32bit_cp1_register(source)					\
+#define _read_32bit_cp1_register(source, gas_hardfloat)			\
 ({									\
 	int __res;							\
 									\
@@ -1278,11 +1382,35 @@ do {									\
 	"	# gas fails to assemble cfc1 for some archs,	\n"	\
 	"	# like Octeon.					\n"	\
 	"	.set	mips1					\n"	\
+	"	"STR(gas_hardfloat)"				\n"	\
 	"	cfc1	%0,"STR(source)"			\n"	\
 	"	.set	pop					\n"	\
 	: "=r" (__res));						\
 	__res;								\
 })
+
+#define _write_32bit_cp1_register(dest, val, gas_hardfloat)		\
+do {									\
+	__asm__ __volatile__(						\
+	"	.set	push					\n"	\
+	"	.set	reorder					\n"	\
+	"	"STR(gas_hardfloat)"				\n"	\
+	"	ctc1	%0,"STR(dest)"				\n"	\
+	"	.set	pop					\n"	\
+	: : "r" (val));							\
+} while (0)
+
+#ifdef GAS_HAS_SET_HARDFLOAT
+#define read_32bit_cp1_register(source)					\
+	_read_32bit_cp1_register(source, .set hardfloat)
+#define write_32bit_cp1_register(dest, val)				\
+	_write_32bit_cp1_register(dest, val, .set hardfloat)
+#else
+#define read_32bit_cp1_register(source)					\
+	_read_32bit_cp1_register(source, )
+#define write_32bit_cp1_register(dest, val)				\
+	_write_32bit_cp1_register(dest, val, )
+#endif
 
 #ifdef HAVE_AS_DSP
 #define rddsp(mask)							\
@@ -1784,6 +1912,7 @@ __BUILD_SET_C0(config5)
 __BUILD_SET_C0(intcontrol)
 __BUILD_SET_C0(intctl)
 __BUILD_SET_C0(srsmap)
+__BUILD_SET_C0(pagegrain)
 __BUILD_SET_C0(brcm_config_0)
 __BUILD_SET_C0(brcm_bus_pll)
 __BUILD_SET_C0(brcm_reset)

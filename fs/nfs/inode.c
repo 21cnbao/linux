@@ -75,7 +75,7 @@ nfs_fattr_to_ino_t(struct nfs_fattr *fattr)
  * nfs_wait_bit_killable - helper for functions that are sleeping on bit locks
  * @word: long word containing the bit lock
  */
-int nfs_wait_bit_killable(void *word)
+int nfs_wait_bit_killable(struct wait_bit_key *key)
 {
 	if (fatal_signal_pending(current))
 		return -ERESTARTSYS;
@@ -192,6 +192,7 @@ void nfs_zap_caches(struct inode *inode)
 	nfs_zap_caches_locked(inode);
 	spin_unlock(&inode->i_lock);
 }
+EXPORT_SYMBOL_GPL(nfs_zap_caches);
 
 void nfs_zap_mapping(struct inode *inode, struct address_space *mapping)
 {
@@ -351,8 +352,9 @@ nfs_fhget(struct super_block *sb, struct nfs_fh *fh, struct nfs_fattr *fattr, st
 
 	nfs_attr_check_mountpoint(sb, fattr);
 
-	if (((fattr->valid & NFS_ATTR_FATTR_FILEID) == 0) &&
-	    !nfs_attr_use_mounted_on_fileid(fattr))
+	if (nfs_attr_use_mounted_on_fileid(fattr))
+		fattr->fileid = fattr->mounted_on_fileid;
+	else if ((fattr->valid & NFS_ATTR_FATTR_FILEID) == 0)
 		goto out_no_inode;
 	if ((fattr->valid & NFS_ATTR_FATTR_TYPE) == 0)
 		goto out_no_inode;
@@ -386,7 +388,6 @@ nfs_fhget(struct super_block *sb, struct nfs_fh *fh, struct nfs_fattr *fattr, st
 		if (S_ISREG(inode->i_mode)) {
 			inode->i_fop = NFS_SB(sb)->nfs_client->rpc_ops->file_ops;
 			inode->i_data.a_ops = &nfs_file_aops;
-			inode->i_data.backing_dev_info = &NFS_SB(sb)->backing_dev_info;
 		} else if (S_ISDIR(inode->i_mode)) {
 			inode->i_op = NFS_SB(sb)->nfs_client->rpc_ops->dir_inode_ops;
 			inode->i_fop = &nfs_dir_operations;
@@ -505,8 +506,15 @@ nfs_setattr(struct dentry *dentry, struct iattr *attr)
 		attr->ia_valid &= ~ATTR_MODE;
 
 	if (attr->ia_valid & ATTR_SIZE) {
-		if (!S_ISREG(inode->i_mode) || attr->ia_size == i_size_read(inode))
+		loff_t i_size;
+
+		BUG_ON(!S_ISREG(inode->i_mode));
+
+		i_size = i_size_read(inode);
+		if (attr->ia_size == i_size)
 			attr->ia_valid &= ~ATTR_SIZE;
+		else if (attr->ia_size < i_size && IS_SWAPFILE(inode))
+			return -ETXTBSY;
 	}
 
 	/* Optimization: if the end result is no change, don't RPC */
@@ -624,7 +632,7 @@ int nfs_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
 {
 	struct inode *inode = dentry->d_inode;
 	int need_atime = NFS_I(inode)->cache_validity & NFS_INO_INVALID_ATIME;
-	int err;
+	int err = 0;
 
 	trace_nfs_getattr_enter(inode);
 	/* Flush out writes to the server in order to update c/mtime.  */
@@ -716,6 +724,7 @@ struct nfs_lock_context *nfs_get_lock_context(struct nfs_open_context *ctx)
 	kfree(new);
 	return res;
 }
+EXPORT_SYMBOL_GPL(nfs_get_lock_context);
 
 void nfs_put_lock_context(struct nfs_lock_context *l_ctx)
 {
@@ -728,6 +737,7 @@ void nfs_put_lock_context(struct nfs_lock_context *l_ctx)
 	spin_unlock(&inode->i_lock);
 	kfree(l_ctx);
 }
+EXPORT_SYMBOL_GPL(nfs_put_lock_context);
 
 /**
  * nfs_close_context - Common close_context() routine NFSv2/v3
@@ -1002,6 +1012,15 @@ int nfs_revalidate_inode(struct nfs_server *server, struct inode *inode)
 }
 EXPORT_SYMBOL_GPL(nfs_revalidate_inode);
 
+int nfs_revalidate_inode_rcu(struct nfs_server *server, struct inode *inode)
+{
+	if (!(NFS_I(inode)->cache_validity &
+			(NFS_INO_INVALID_ATTR|NFS_INO_INVALID_LABEL))
+			&& !nfs_attribute_cache_expired(inode))
+		return NFS_STALE(inode) ? -ESTALE : 0;
+	return -ECHILD;
+}
+
 static int nfs_invalidate_mapping(struct inode *inode, struct address_space *mapping)
 {
 	struct nfs_inode *nfsi = NFS_I(inode);
@@ -1074,8 +1093,8 @@ int nfs_revalidate_mapping(struct inode *inode, struct address_space *mapping)
 	 * the bit lock here if it looks like we're going to be doing that.
 	 */
 	for (;;) {
-		ret = wait_on_bit(bitlock, NFS_INO_INVALIDATING,
-				  nfs_wait_bit_killable, TASK_KILLABLE);
+		ret = wait_on_bit_action(bitlock, NFS_INO_INVALIDATING,
+					 nfs_wait_bit_killable, TASK_KILLABLE);
 		if (ret)
 			goto out;
 		spin_lock(&inode->i_lock);
@@ -1136,7 +1155,7 @@ static unsigned long nfs_wcc_update_inode(struct inode *inode, struct nfs_fattr 
 	if ((fattr->valid & NFS_ATTR_FATTR_PRESIZE)
 			&& (fattr->valid & NFS_ATTR_FATTR_SIZE)
 			&& i_size_read(inode) == nfs_size_to_loff_t(fattr->pre_size)
-			&& nfsi->npages == 0) {
+			&& nfsi->nrequests == 0) {
 		i_size_write(inode, nfs_size_to_loff_t(fattr->size));
 		ret |= NFS_INO_INVALID_ATTR;
 	}
@@ -1179,7 +1198,7 @@ static int nfs_check_inode_attributes(struct inode *inode, struct nfs_fattr *fat
 	if (fattr->valid & NFS_ATTR_FATTR_SIZE) {
 		cur_size = i_size_read(inode);
 		new_isize = nfs_size_to_loff_t(fattr->size);
-		if (cur_size != new_isize && nfsi->npages == 0)
+		if (cur_size != new_isize && nfsi->nrequests == 0)
 			invalid |= NFS_INO_INVALID_ATTR|NFS_INO_REVAL_PAGECACHE;
 	}
 
@@ -1606,7 +1625,7 @@ static int nfs_update_inode(struct inode *inode, struct nfs_fattr *fattr)
 		if (new_isize != cur_isize) {
 			/* Do we perhaps have any outstanding writes, or has
 			 * the file grown beyond our last write? */
-			if ((nfsi->npages == 0) || new_isize > cur_isize) {
+			if ((nfsi->nrequests == 0) || new_isize > cur_isize) {
 				i_size_write(inode, new_isize);
 				invalid |= NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA;
 				invalid &= ~NFS_INO_REVAL_PAGECACHE;
@@ -1756,7 +1775,6 @@ static inline void nfs4_init_once(struct nfs_inode *nfsi)
 #if IS_ENABLED(CONFIG_NFS_V4)
 	INIT_LIST_HEAD(&nfsi->open_states);
 	nfsi->delegation = NULL;
-	nfsi->delegation_state = 0;
 	init_rwsem(&nfsi->rwsem);
 	nfsi->layout = NULL;
 #endif
@@ -1771,7 +1789,7 @@ static void init_once(void *foo)
 	INIT_LIST_HEAD(&nfsi->access_cache_entry_lru);
 	INIT_LIST_HEAD(&nfsi->access_cache_inode_lru);
 	INIT_LIST_HEAD(&nfsi->commit_info.list);
-	nfsi->npages = 0;
+	nfsi->nrequests = 0;
 	nfsi->commit_info.ncommit = 0;
 	atomic_set(&nfsi->commit_info.rpcs_out, 0);
 	atomic_set(&nfsi->silly_count, 1);
@@ -1840,11 +1858,12 @@ EXPORT_SYMBOL_GPL(nfs_net_id);
 static int nfs_net_init(struct net *net)
 {
 	nfs_clients_init(net);
-	return 0;
+	return nfs_fs_proc_net_init(net);
 }
 
 static void nfs_net_exit(struct net *net)
 {
+	nfs_fs_proc_net_exit(net);
 	nfs_cleanup_cb_ident_idr(net);
 }
 

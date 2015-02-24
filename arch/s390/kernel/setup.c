@@ -24,6 +24,7 @@
 #include <linux/stddef.h>
 #include <linux/unistd.h>
 #include <linux/ptrace.h>
+#include <linux/random.h>
 #include <linux/user.h>
 #include <linux/tty.h>
 #include <linux/ioport.h>
@@ -40,7 +41,6 @@
 #include <linux/ctype.h>
 #include <linux/reboot.h>
 #include <linux/topology.h>
-#include <linux/ftrace.h>
 #include <linux/kexec.h>
 #include <linux/crash_dump.h>
 #include <linux/memory.h>
@@ -61,6 +61,7 @@
 #include <asm/diag.h>
 #include <asm/os_info.h>
 #include <asm/sclp.h>
+#include <asm/sysinfo.h>
 #include "entry.h"
 
 /*
@@ -341,6 +342,9 @@ static void __init setup_lowcore(void)
 		__ctl_set_bit(14, 29);
 	}
 #else
+	if (MACHINE_HAS_VX)
+		lc->vector_save_area_addr =
+			(unsigned long) &lc->vector_save_area;
 	lc->vdso_per_cpu_data = (unsigned long) &lc->paste[0];
 #endif
 	lc->sync_enter_timer = S390_lowcore.sync_enter_timer;
@@ -351,7 +355,6 @@ static void __init setup_lowcore(void)
 	lc->steal_timer = S390_lowcore.steal_timer;
 	lc->last_update_timer = S390_lowcore.last_update_timer;
 	lc->last_update_clock = S390_lowcore.last_update_clock;
-	lc->ftrace_func = S390_lowcore.ftrace_func;
 
 	restart_stack = __alloc_bootmem(ASYNC_SIZE, ASYNC_SIZE, 0);
 	restart_stack += ASYNC_SIZE;
@@ -450,8 +453,8 @@ static void __init setup_memory_end(void)
 #ifdef CONFIG_64BIT
 	vmalloc_size = VMALLOC_END ?: (128UL << 30) - MODULES_LEN;
 	tmp = (memory_end ?: max_physmem_end) / PAGE_SIZE;
-	tmp = tmp * (sizeof(struct page) + PAGE_SIZE) + vmalloc_size;
-	if (tmp <= (1UL << 42))
+	tmp = tmp * (sizeof(struct page) + PAGE_SIZE);
+	if (tmp + vmalloc_size + MODULES_LEN <= (1UL << 42))
 		vmax = 1UL << 42;	/* 3-level kernel page table */
 	else
 		vmax = 1UL << 53;	/* 4-level kernel page table */
@@ -501,6 +504,8 @@ static int kdump_mem_notifier(struct notifier_block *nb,
 {
 	struct memory_notify *arg = data;
 
+	if (action != MEM_GOING_OFFLINE)
+		return NOTIFY_OK;
 	if (arg->start_pfn < PFN_DOWN(resource_size(&crashk_res)))
 		return NOTIFY_BAD;
 	if (arg->start_pfn > PFN_DOWN(crashk_res.end))
@@ -761,9 +766,16 @@ static void __init setup_hwcaps(void)
 	 */
 	if (test_facility(50) && test_facility(73))
 		elf_hwcap |= HWCAP_S390_TE;
+
+	/*
+	 * Vector extension HWCAP_S390_VXRS is bit 11.
+	 */
+	if (test_facility(129))
+		elf_hwcap |= HWCAP_S390_VXRS;
 #endif
 
 	get_cpu_id(&cpu_id);
+	add_device_randomness(&cpu_id, sizeof(cpu_id));
 	switch (cpu_id.machine) {
 	case 0x9672:
 #if !defined(CONFIG_64BIT)
@@ -798,7 +810,23 @@ static void __init setup_hwcaps(void)
 	case 0x2828:
 		strcpy(elf_platform, "zEC12");
 		break;
+	case 0x2964:
+		strcpy(elf_platform, "z13");
+		break;
 	}
+}
+
+/*
+ * Add system information as device randomness
+ */
+static void __init setup_randomness(void)
+{
+	struct sysinfo_3_2_2 *vmms;
+
+	vmms = (struct sysinfo_3_2_2 *) alloc_page(GFP_KERNEL);
+	if (vmms && stsi(vmms, 3, 2, 2) == 0 && vmms->count)
+		add_device_randomness(&vmms, vmms->count);
+	free_page((unsigned long) vmms);
 }
 
 /*
@@ -881,7 +909,6 @@ void __init setup_arch(char **cmdline_p)
 	setup_lowcore();
 	smp_fill_possible_mask();
         cpu_init();
-	s390_init_cpu_topology();
 
 	/*
 	 * Setup capabilities (ELF_HWCAP & ELF_PLATFORM).
@@ -899,6 +926,9 @@ void __init setup_arch(char **cmdline_p)
 
 	/* Setup zfcpdump support */
 	setup_zfcpdump();
+
+	/* Add system specific data to the random pool */
+	setup_randomness();
 }
 
 #ifdef CONFIG_32BIT

@@ -496,7 +496,7 @@ static ssize_t driver_state_read(struct file *file, char __user *user_buf,
 	DRIVER_STATE_PRINT_INT(sg_enabled);
 	DRIVER_STATE_PRINT_INT(enable_11a);
 	DRIVER_STATE_PRINT_INT(noise);
-	DRIVER_STATE_PRINT_HEX(ap_fw_ps_map);
+	DRIVER_STATE_PRINT_LHEX(ap_fw_ps_map);
 	DRIVER_STATE_PRINT_LHEX(ap_ps_map);
 	DRIVER_STATE_PRINT_HEX(quirks);
 	DRIVER_STATE_PRINT_HEX(irq);
@@ -929,17 +929,10 @@ static ssize_t beacon_filtering_write(struct file *file,
 {
 	struct wl1271 *wl = file->private_data;
 	struct wl12xx_vif *wlvif;
-	char buf[10];
-	size_t len;
 	unsigned long value;
 	int ret;
 
-	len = min(count, sizeof(buf) - 1);
-	if (copy_from_user(buf, user_buf, len))
-		return -EFAULT;
-	buf[len] = '\0';
-
-	ret = kstrtoul(buf, 0, &value);
+	ret = kstrtoul_from_user(user_buf, count, 0, &value);
 	if (ret < 0) {
 		wl1271_warning("illegal value for beacon_filtering!");
 		return -EINVAL;

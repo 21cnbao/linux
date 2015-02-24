@@ -16,11 +16,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
  */
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -69,10 +64,6 @@
 
 #define SPI_STATUS_WE                   (1UL << 1)
 #define SPI_STATUS_RD                   (1UL << 0)
-
-#define WRITE 0
-#define READ  1
-
 
 /* use PIO for small transfers, avoiding DMA setup/teardown overhead and
  * cache operations; better heuristics consider wordsize and bitrate.
@@ -420,8 +411,6 @@ static int omap1_spi100k_probe(struct platform_device *pdev)
 	master->min_speed_hz = OMAP1_SPI100K_MAX_FREQ/(1<<16);
 	master->max_speed_hz = OMAP1_SPI100K_MAX_FREQ;
 
-	platform_set_drvdata(pdev, master);
-
 	spi100k = spi_master_get_devdata(master);
 
 	/*
@@ -459,7 +448,6 @@ err:
 static struct platform_driver omap1_spi100k_driver = {
 	.driver = {
 		.name		= "omap1_spi100k",
-		.owner		= THIS_MODULE,
 	},
 	.probe		= omap1_spi100k_probe,
 };

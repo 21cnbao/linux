@@ -36,14 +36,13 @@
 
 #define DEBUG_SUBSYSTEM S_LNET
 
-#include <linux/libcfs/libcfs.h>
-#include <linux/libcfs/libcfs_crypto.h>
-#include <linux/lnet/lib-lnet.h>
-#include <linux/lnet/lnet.h>
+#include "../../include/linux/libcfs/libcfs.h"
+#include "../../include/linux/libcfs/libcfs_crypto.h"
+#include "../../include/linux/lnet/lib-lnet.h"
+#include "../../include/linux/lnet/lnet.h"
 #include "tracefile.h"
 
-void
-kportal_memhog_free (struct libcfs_device_userstate *ldu)
+static void kportal_memhog_free (struct libcfs_device_userstate *ldu)
 {
 	struct page **level0p = &ldu->ldu_memhog_root_page;
 	struct page **level1p;
@@ -86,8 +85,7 @@ kportal_memhog_free (struct libcfs_device_userstate *ldu)
 	LASSERT (ldu->ldu_memhog_pages == 0);
 }
 
-int
-kportal_memhog_alloc(struct libcfs_device_userstate *ldu, int npages,
+static int kportal_memhog_alloc(struct libcfs_device_userstate *ldu, int npages,
 		     gfp_t flags)
 {
 	struct page **level0p;
@@ -119,7 +117,7 @@ kportal_memhog_alloc(struct libcfs_device_userstate *ldu, int npages,
 	       count1 < PAGE_CACHE_SIZE/sizeof(struct page *)) {
 
 		if (cfs_signal_pending())
-			return (-EINTR);
+			return -EINTR;
 
 		*level1p = alloc_page(flags);
 		if (*level1p == NULL)
@@ -134,11 +132,11 @@ kportal_memhog_alloc(struct libcfs_device_userstate *ldu, int npages,
 		       count2 < PAGE_CACHE_SIZE/sizeof(struct page *)) {
 
 			if (cfs_signal_pending())
-				return (-EINTR);
+				return -EINTR;
 
 			*level2p = alloc_page(flags);
 			if (*level2p == NULL)
-				return (-ENOMEM);
+				return -ENOMEM;
 			ldu->ldu_memhog_pages++;
 
 			level2p++;
@@ -217,7 +215,7 @@ int libcfs_deregister_ioctl(struct libcfs_ioctl_handler *hand)
 }
 EXPORT_SYMBOL(libcfs_deregister_ioctl);
 
-static int libcfs_ioctl_int(struct cfs_psdev_file *pfile,unsigned long cmd,
+static int libcfs_ioctl_int(struct cfs_psdev_file *pfile, unsigned long cmd,
 			    void *arg, struct libcfs_ioctl_data *data)
 {
 	int err = -EINVAL;
@@ -301,7 +299,8 @@ static int libcfs_ioctl(struct cfs_psdev_file *pfile, unsigned long cmd, void *a
 	/* 'cmd' and permissions get checked in our arch-specific caller */
 	if (libcfs_ioctl_getdata(buf, buf + 800, (void *)arg)) {
 		CERROR("PORTALS ioctl: data error\n");
-		GOTO(out, err = -EINVAL);
+		err = -EINVAL;
+		goto out;
 	}
 	data = (struct libcfs_ioctl_data *)buf;
 
@@ -333,8 +332,6 @@ extern struct mutex cfs_trace_thread_mutex;
 extern struct cfs_wi_sched *cfs_sched_rehash;
 
 extern void libcfs_init_nidstrings(void);
-extern int libcfs_arch_init(void);
-extern void libcfs_arch_cleanup(void);
 
 static int init_libcfs_module(void)
 {
@@ -351,7 +348,7 @@ static int init_libcfs_module(void)
 	rc = libcfs_debug_init(5 * 1024 * 1024);
 	if (rc < 0) {
 		printk(KERN_ERR "LustreError: libcfs_debug_init: %d\n", rc);
-		return (rc);
+		return rc;
 	}
 
 	rc = cfs_cpu_init();
@@ -438,9 +435,6 @@ static void exit_libcfs_module(void)
 	if (rc)
 		printk(KERN_ERR "LustreError: libcfs_debug_cleanup: %d\n",
 		       rc);
-
-	fini_rwsem(&ioctl_list_sem);
-	fini_rwsem(&cfs_tracefile_sem);
 
 	libcfs_arch_cleanup();
 }

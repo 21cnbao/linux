@@ -7,13 +7,10 @@
 #include <linux/seq_file.h>
 #include <linux/spinlock.h>
 #include <linux/uaccess.h>
-#include <linux/debugfs.h>
 #include <linux/ftrace.h>
 #include <linux/module.h>
 #include <linux/sysctl.h>
 #include <linux/init.h>
-#include <linux/fs.h>
-#include <linux/magic.h>
 
 #include <asm/setup.h>
 
@@ -171,8 +168,7 @@ check_stack(unsigned long ip, unsigned long *stack)
 			i++;
 	}
 
-	if ((current != &init_task &&
-		*(end_of_stack(current)) != STACK_END_MAGIC)) {
+	if (task_stack_end_corrupted(current)) {
 		print_max_stack();
 		BUG();
 	}
@@ -464,7 +460,7 @@ static __init int stack_trace_init(void)
 	struct dentry *d_tracer;
 
 	d_tracer = tracing_init_dentry();
-	if (!d_tracer)
+	if (IS_ERR(d_tracer))
 		return 0;
 
 	trace_create_file("stack_max_size", 0644, d_tracer,

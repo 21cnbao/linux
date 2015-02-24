@@ -41,22 +41,22 @@
  */
 
 
-#include <linux/libcfs/libcfs.h>
-#include <linux/lnet/lib-lnet.h>
+#include "../../include/linux/libcfs/libcfs.h"
+#include "../../include/linux/lnet/lib-lnet.h"
 #include "console.h"
 #include "conrpc.h"
 
-#define LST_NODE_STATE_COUNTER(nd, p)		   \
-do {						    \
-	if ((nd)->nd_state == LST_NODE_ACTIVE)	  \
-		(p)->nle_nactive ++;		    \
+#define LST_NODE_STATE_COUNTER(nd, p)			\
+do {							\
+	if ((nd)->nd_state == LST_NODE_ACTIVE)		\
+		(p)->nle_nactive++;			\
 	else if ((nd)->nd_state == LST_NODE_BUSY)       \
-		(p)->nle_nbusy ++;		      \
+		(p)->nle_nbusy++;			\
 	else if ((nd)->nd_state == LST_NODE_DOWN)       \
-		(p)->nle_ndown ++;		      \
-	else					    \
-		(p)->nle_nunknown ++;		   \
-	(p)->nle_nnode ++;			      \
+		(p)->nle_ndown++;			\
+	else						\
+		(p)->nle_nunknown++;			\
+	(p)->nle_nnode++;				\
 } while (0)
 
 lstcon_session_t	console_session;
@@ -204,9 +204,6 @@ lstcon_group_alloc(char *name, lstcon_group_t **grpp)
 	if (grp == NULL)
 		return -ENOMEM;
 
-	memset(grp, 0, offsetof(lstcon_group_t,
-				grp_ndl_hash[LST_NODE_HASHSIZE]));
-
 	grp->grp_ref = 1;
 	if (name != NULL)
 		strcpy(grp->grp_name, name);
@@ -226,7 +223,7 @@ lstcon_group_alloc(char *name, lstcon_group_t **grpp)
 static void
 lstcon_group_addref(lstcon_group_t *grp)
 {
-	grp->grp_ref ++;
+	grp->grp_ref++;
 }
 
 static void lstcon_group_ndlink_release(lstcon_group_t *, lstcon_ndlink_t *);
@@ -301,7 +298,7 @@ lstcon_group_ndlink_find(lstcon_group_t *grp, lnet_process_id_t id,
 		return 0;
 
 	list_add_tail(&(*ndlpp)->ndl_link, &grp->grp_ndl_list);
-	grp->grp_nnode ++;
+	grp->grp_nnode++;
 
 	return 0;
 }
@@ -327,7 +324,7 @@ lstcon_group_ndlink_move(lstcon_group_t *old,
 
 	list_add_tail(&ndl->ndl_hlink, &new->grp_ndl_hash[idx]);
 	list_add_tail(&ndl->ndl_link, &new->grp_ndl_list);
-	new->grp_nnode ++;
+	new->grp_nnode++;
 
 	return;
 }
@@ -770,7 +767,7 @@ lstcon_nodes_getent(struct list_head *head, int *index_p,
 				     &nd->nd_state, sizeof(nd->nd_state)))
 			return -EFAULT;
 
-		count ++;
+		count++;
 	}
 
 	if (index <= *index_p)
@@ -814,8 +811,6 @@ lstcon_group_info(char *name, lstcon_ndlist_ent_t *gents_p,
 
 		return -ENOMEM;
 	}
-
-	memset(gentp, 0, sizeof(lstcon_ndlist_ent_t));
 
 	list_for_each_entry(ndl, &grp->grp_ndl_list, ndl_link)
 		LST_NODE_STATE_COUNTER(ndl->ndl_node, gentp);
@@ -915,7 +910,7 @@ lstcon_batch_list(int index, int len, char *name_up)
 
 	list_for_each_entry(bat, &console_session.ses_bat_list, bat_link) {
 		if (index-- == 0) {
-			return copy_to_user(name_up,bat->bat_name, len) ?
+			return copy_to_user(name_up, bat->bat_name, len) ?
 			       -EFAULT: 0;
 		}
 	}
@@ -970,8 +965,6 @@ lstcon_batch_info(char *name, lstcon_test_batch_ent_t *ent_up, int server,
 	LIBCFS_ALLOC(entp, sizeof(lstcon_test_batch_ent_t));
 	if (entp == NULL)
 		return -ENOMEM;
-
-	memset(entp, 0, sizeof(lstcon_test_batch_ent_t));
 
 	if (test == NULL) {
 		entp->u.tbe_batch.bae_ntest = bat->bat_ntest;
@@ -1215,8 +1208,7 @@ again:
 
 		lstcon_rpc_trans_destroy(trans);
 		/* return if any error */
-		CDEBUG(D_NET, "Failed to add test %s, "
-			      "RPC error %d, framework error %d\n",
+		CDEBUG(D_NET, "Failed to add test %s, RPC error %d, framework error %d\n",
 		       transop == LST_TRANS_TSBCLIADD ? "client" : "server",
 		       lstcon_trans_stat()->trs_rpc_errno,
 		       lstcon_trans_stat()->trs_fwk_errno);
@@ -1319,7 +1311,6 @@ lstcon_test_add(char *batch_name, int type, int loop,
 		goto out;
 	}
 
-	memset(test, 0, offsetof(lstcon_test_t, tes_param[paramlen]));
 	test->tes_hdr.tsb_id	= batch->bat_hdr.tsb_id;
 	test->tes_batch		= batch;
 	test->tes_type		= type;
@@ -1352,7 +1343,7 @@ lstcon_test_add(char *batch_name, int type, int loop,
 	/* add to test list anyway, so user can check what's going on */
 	list_add_tail(&test->tes_link, &batch->bat_test_list);
 
-	batch->bat_ntest ++;
+	batch->bat_ntest++;
 	test->tes_hdr.tsb_index = batch->bat_ntest;
 
 	/*  hold groups so nobody can change them */
@@ -1789,8 +1780,6 @@ lstcon_session_info(lst_sid_t *sid_up, int *key_up, unsigned *featp,
 	if (entp == NULL)
 		return -ENOMEM;
 
-	memset(entp, 0, sizeof(*entp));
-
 	list_for_each_entry(ndl, &console_session.ses_ndl_list, ndl_link)
 		LST_NODE_STATE_COUNTER(ndl->ndl_node, entp);
 
@@ -1895,8 +1884,7 @@ lstcon_session_feats_check(unsigned feats)
 	spin_unlock(&console_session.ses_rpc_lock);
 
 	if (rc != 0) {
-		CERROR("remote features %x do not match with "
-		       "session features %x of console\n",
+		CERROR("remote features %x do not match with session features %x of console\n",
 		       feats, console_session.ses_features);
 	}
 
@@ -1987,7 +1975,7 @@ out:
 }
 
 srpc_service_t lstcon_acceptor_service;
-void lstcon_init_acceptor_service(void)
+static void lstcon_init_acceptor_service(void)
 {
 	/* initialize selftest console acceptor service table */
 	lstcon_acceptor_service.sv_name    = "join session";
@@ -1998,7 +1986,7 @@ void lstcon_init_acceptor_service(void)
 
 extern int lstcon_ioctl_entry(unsigned int cmd, struct libcfs_ioctl_data *data);
 
-DECLARE_IOCTL_HANDLER(lstcon_ioctl_handler, lstcon_ioctl_entry);
+static DECLARE_IOCTL_HANDLER(lstcon_ioctl_handler, lstcon_ioctl_entry);
 
 /* initialize console */
 int
@@ -2016,7 +2004,7 @@ lstcon_console_init(void)
 	console_session.ses_expired	    = 0;
 	console_session.ses_feats_updated   = 0;
 	console_session.ses_features	    = LST_FEATS_MASK;
-	console_session.ses_laststamp	    = cfs_time_current_sec();
+	console_session.ses_laststamp	    = get_seconds();
 
 	mutex_init(&console_session.ses_mutex);
 

@@ -661,10 +661,8 @@ static int max8997_muic_probe(struct platform_device *pdev)
 
 	info = devm_kzalloc(&pdev->dev, sizeof(struct max8997_muic_info),
 			    GFP_KERNEL);
-	if (!info) {
-		dev_err(&pdev->dev, "failed to allocate memory\n");
+	if (!info)
 		return -ENOMEM;
-	}
 
 	info->dev = &pdev->dev;
 	info->muic = max8997->muic;
@@ -706,7 +704,6 @@ static int max8997_muic_probe(struct platform_device *pdev)
 		goto err_irq;
 	}
 	info->edev->name = DEV_NAME;
-	info->edev->dev.parent = &pdev->dev;
 
 	ret = devm_extcon_dev_register(&pdev->dev, info->edev);
 	if (ret) {
@@ -795,7 +792,6 @@ static int max8997_muic_remove(struct platform_device *pdev)
 static struct platform_driver max8997_muic_driver = {
 	.driver		= {
 		.name	= DEV_NAME,
-		.owner	= THIS_MODULE,
 	},
 	.probe		= max8997_muic_probe,
 	.remove		= max8997_muic_remove,

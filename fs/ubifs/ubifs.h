@@ -36,6 +36,7 @@
 #include <linux/mtd/ubi.h>
 #include <linux/pagemap.h>
 #include <linux/backing-dev.h>
+#include <linux/security.h>
 #include "ubifs-media.h"
 
 /* Version of this UBIFS implementation */
@@ -314,7 +315,6 @@ struct ubifs_scan_node {
  * @nodes_cnt: number of nodes scanned
  * @nodes: list of struct ubifs_scan_node
  * @endpt: end point (and therefore the start of empty space)
- * @ecc: read returned -EBADMSG
  * @buf: buffer containing entire LEB scanned
  */
 struct ubifs_scan_leb {
@@ -322,7 +322,6 @@ struct ubifs_scan_leb {
 	int nodes_cnt;
 	struct list_head nodes;
 	int endpt;
-	int ecc;
 	void *buf;
 };
 
@@ -1051,7 +1050,6 @@ struct ubifs_debug_info;
  *
  * @mst_node: master node
  * @mst_offs: offset of valid master node
- * @mst_mutex: protects the master node area, @mst_node, and @mst_offs
  *
  * @max_bu_buf_len: maximum bulk-read buffer length
  * @bu_mutex: protects the pre-allocated bulk-read buffer and @c->bu
@@ -1292,7 +1290,6 @@ struct ubifs_info {
 
 	struct ubifs_mst_node *mst_node;
 	int mst_offs;
-	struct mutex mst_mutex;
 
 	int max_bu_buf_len;
 	struct mutex bu_mutex;
@@ -1469,6 +1466,7 @@ extern spinlock_t ubifs_infos_lock;
 extern atomic_long_t ubifs_clean_zn_cnt;
 extern struct kmem_cache *ubifs_inode_slab;
 extern const struct super_operations ubifs_super_operations;
+extern const struct xattr_handler *ubifs_xattr_handlers[];
 extern const struct address_space_operations ubifs_file_address_operations;
 extern const struct file_operations ubifs_file_operations;
 extern const struct inode_operations ubifs_file_inode_operations;
@@ -1758,6 +1756,8 @@ ssize_t ubifs_getxattr(struct dentry *dentry, const char *name, void *buf,
 		       size_t size);
 ssize_t ubifs_listxattr(struct dentry *dentry, char *buffer, size_t size);
 int ubifs_removexattr(struct dentry *dentry, const char *name);
+int ubifs_init_security(struct inode *dentry, struct inode *inode,
+			const struct qstr *qstr);
 
 /* super.c */
 struct inode *ubifs_iget(struct super_block *sb, unsigned long inum);

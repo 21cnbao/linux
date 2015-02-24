@@ -155,7 +155,7 @@
  */
 
 /*
- * Operations state - intermediate states that are visible outside of 
+ * Operations state - intermediate states that are visible outside of
  *   STRIPE_ACTIVE.
  * In general _idle indicates nothing is running, _run indicates a data
  * processing operation is active, and _result means the data processing result
@@ -364,7 +364,6 @@ enum {
  * HANDLE gets cleared if stripe_handle leaves nothing locked.
  */
 
-
 struct disk_info {
 	struct md_rdev	*rdev, *replacement;
 };
@@ -528,7 +527,6 @@ struct r5conf {
 #define ALGORITHM_ROTATING_N_RESTART	9 /* DDF PRL=6 RLQ=2 */
 #define ALGORITHM_ROTATING_N_CONTINUE	10 /*DDF PRL=6 RLQ=3 */
 
-
 /* For every RAID5 algorithm we define a RAID6 algorithm
  * with exactly the same layout for data and parity, and
  * with the Q block always on the last device (N-1).
@@ -560,7 +558,6 @@ static inline int algorithm_is_DDF(int layout)
 	return layout >= 8 && layout <= 10;
 }
 
-extern int md_raid5_congested(struct mddev *mddev, int bits);
 extern void md_raid5_kick_device(struct r5conf *conf);
 extern int raid5_set_cache_size(struct mddev *mddev, int size);
 #endif

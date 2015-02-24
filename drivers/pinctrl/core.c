@@ -992,29 +992,15 @@ int pinctrl_select_state(struct pinctrl *p, struct pinctrl_state *state)
 
 	if (p->state) {
 		/*
-		 * The set of groups with a mux configuration in the old state
-		 * may not be identical to the set of groups with a mux setting
-		 * in the new state. While this might be unusual, it's entirely
-		 * possible for the "user"-supplied mapping table to be written
-		 * that way. For each group that was configured in the old state
-		 * but not in the new state, this code puts that group into a
-		 * safe/disabled state.
+		 * For each pinmux setting in the old state, forget SW's record
+		 * of mux owner for that pingroup. Any pingroups which are
+		 * still owned by the new state will be re-acquired by the call
+		 * to pinmux_enable_setting() in the loop below.
 		 */
 		list_for_each_entry(setting, &p->state->settings, node) {
-			bool found = false;
 			if (setting->type != PIN_MAP_TYPE_MUX_GROUP)
 				continue;
-			list_for_each_entry(setting2, &state->settings, node) {
-				if (setting2->type != PIN_MAP_TYPE_MUX_GROUP)
-					continue;
-				if (setting2->data.mux.group ==
-						setting->data.mux.group) {
-					found = true;
-					break;
-				}
-			}
-			if (!found)
-				pinmux_disable_setting(setting);
+			pinmux_disable_setting(setting);
 		}
 	}
 
@@ -1815,14 +1801,15 @@ void pinctrl_unregister(struct pinctrl_dev *pctldev)
 	if (pctldev == NULL)
 		return;
 
-	mutex_lock(&pinctrldev_list_mutex);
 	mutex_lock(&pctldev->mutex);
-
 	pinctrl_remove_device_debugfs(pctldev);
+	mutex_unlock(&pctldev->mutex);
 
 	if (!IS_ERR(pctldev->p))
 		pinctrl_put(pctldev->p);
 
+	mutex_lock(&pinctrldev_list_mutex);
+	mutex_lock(&pctldev->mutex);
 	/* TODO: check that no pinmuxes are still active? */
 	list_del(&pctldev->node);
 	/* Destroy descriptor tree */

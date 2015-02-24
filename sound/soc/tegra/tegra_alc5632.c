@@ -41,8 +41,7 @@ static int tegra_alc5632_asoc_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
-	struct snd_soc_codec *codec = codec_dai->codec;
-	struct snd_soc_card *card = codec->card;
+	struct snd_soc_card *card = rtd->card;
 	struct tegra_alc5632 *alc5632 = snd_soc_card_get_drvdata(card);
 	int srate, mclk;
 	int err;
@@ -105,7 +104,7 @@ static int tegra_alc5632_asoc_init(struct snd_soc_pcm_runtime *rtd)
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
 	struct snd_soc_codec *codec = codec_dai->codec;
 	struct snd_soc_dapm_context *dapm = &codec->dapm;
-	struct tegra_alc5632 *machine = snd_soc_card_get_drvdata(codec->card);
+	struct tegra_alc5632 *machine = snd_soc_card_get_drvdata(rtd->card);
 
 	snd_soc_jack_new(codec, "Headset Jack", SND_JACK_HEADSET,
 			 &tegra_alc5632_hs_jack);
@@ -251,7 +250,6 @@ static const struct of_device_id tegra_alc5632_of_match[] = {
 static struct platform_driver tegra_alc5632_driver = {
 	.driver = {
 		.name = DRV_NAME,
-		.owner = THIS_MODULE,
 		.pm = &snd_soc_pm_ops,
 		.of_match_table = tegra_alc5632_of_match,
 	},

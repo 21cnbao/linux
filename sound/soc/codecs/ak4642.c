@@ -491,23 +491,7 @@ static int ak4642_resume(struct snd_soc_codec *codec)
 	return 0;
 }
 
-
-static int ak4642_probe(struct snd_soc_codec *codec)
-{
-	ak4642_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
-
-	return 0;
-}
-
-static int ak4642_remove(struct snd_soc_codec *codec)
-{
-	ak4642_set_bias_level(codec, SND_SOC_BIAS_OFF);
-	return 0;
-}
-
 static struct snd_soc_codec_driver soc_codec_dev_ak4642 = {
-	.probe			= ak4642_probe,
-	.remove			= ak4642_remove,
 	.resume			= ak4642_resume,
 	.set_bias_level		= ak4642_set_bias_level,
 	.controls		= ak4642_snd_controls,
@@ -547,7 +531,7 @@ static const struct ak4642_drvdata ak4648_drvdata = {
 	.extended_frequencies = 1,
 };
 
-static struct of_device_id ak4642_of_match[];
+static const struct of_device_id ak4642_of_match[];
 static int ak4642_i2c_probe(struct i2c_client *i2c,
 			    const struct i2c_device_id *id)
 {
@@ -593,7 +577,7 @@ static int ak4642_i2c_remove(struct i2c_client *client)
 	return 0;
 }
 
-static struct of_device_id ak4642_of_match[] = {
+static const struct of_device_id ak4642_of_match[] = {
 	{ .compatible = "asahi-kasei,ak4642",	.data = &ak4642_drvdata},
 	{ .compatible = "asahi-kasei,ak4643",	.data = &ak4643_drvdata},
 	{ .compatible = "asahi-kasei,ak4648",	.data = &ak4648_drvdata},

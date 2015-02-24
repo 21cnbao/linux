@@ -33,6 +33,7 @@
 #include <asm/page.h>		/* for PAGE_SIZE */
 #include <asm/sections.h>	/* for dereference_function_descriptor() */
 
+#include <linux/string_helpers.h>
 #include "kstrtox.h"
 
 /**
@@ -113,8 +114,9 @@ int skip_atoi(const char **s)
 {
 	int i = 0;
 
-	while (isdigit(**s))
+	do {
 		i = i*10 + *((*s)++) - '0';
+	} while (isdigit(**s));
 
 	return i;
 }
@@ -792,6 +794,87 @@ char *hex_string(char *buf, char *end, u8 *addr, struct printf_spec spec,
 }
 
 static noinline_for_stack
+char *bitmap_string(char *buf, char *end, unsigned long *bitmap,
+		    struct printf_spec spec, const char *fmt)
+{
+	const int CHUNKSZ = 32;
+	int nr_bits = max_t(int, spec.field_width, 0);
+	int i, chunksz;
+	bool first = true;
+
+	/* reused to print numbers */
+	spec = (struct printf_spec){ .flags = SMALL | ZEROPAD, .base = 16 };
+
+	chunksz = nr_bits & (CHUNKSZ - 1);
+	if (chunksz == 0)
+		chunksz = CHUNKSZ;
+
+	i = ALIGN(nr_bits, CHUNKSZ) - CHUNKSZ;
+	for (; i >= 0; i -= CHUNKSZ) {
+		u32 chunkmask, val;
+		int word, bit;
+
+		chunkmask = ((1ULL << chunksz) - 1);
+		word = i / BITS_PER_LONG;
+		bit = i % BITS_PER_LONG;
+		val = (bitmap[word] >> bit) & chunkmask;
+
+		if (!first) {
+			if (buf < end)
+				*buf = ',';
+			buf++;
+		}
+		first = false;
+
+		spec.field_width = DIV_ROUND_UP(chunksz, 4);
+		buf = number(buf, end, val, spec);
+
+		chunksz = CHUNKSZ;
+	}
+	return buf;
+}
+
+static noinline_for_stack
+char *bitmap_list_string(char *buf, char *end, unsigned long *bitmap,
+			 struct printf_spec spec, const char *fmt)
+{
+	int nr_bits = max_t(int, spec.field_width, 0);
+	/* current bit is 'cur', most recently seen range is [rbot, rtop] */
+	int cur, rbot, rtop;
+	bool first = true;
+
+	/* reused to print numbers */
+	spec = (struct printf_spec){ .base = 10 };
+
+	rbot = cur = find_first_bit(bitmap, nr_bits);
+	while (cur < nr_bits) {
+		rtop = cur;
+		cur = find_next_bit(bitmap, nr_bits, cur + 1);
+		if (cur < nr_bits && cur <= rtop + 1)
+			continue;
+
+		if (!first) {
+			if (buf < end)
+				*buf = ',';
+			buf++;
+		}
+		first = false;
+
+		buf = number(buf, end, rbot, spec);
+		if (rbot < rtop) {
+			if (buf < end)
+				*buf = '-';
+			buf++;
+
+			buf = number(buf, end, rtop, spec);
+		}
+
+		rbot = cur;
+	}
+	return buf;
+}
+
+static noinline_for_stack
 char *mac_address_string(char *buf, char *end, u8 *addr,
 			 struct printf_spec spec, const char *fmt)
 {
@@ -1101,6 +1184,62 @@ char *ip4_addr_string_sa(char *buf, char *end, const struct sockaddr_in *sa,
 }
 
 static noinline_for_stack
+char *escaped_string(char *buf, char *end, u8 *addr, struct printf_spec spec,
+		     const char *fmt)
+{
+	bool found = true;
+	int count = 1;
+	unsigned int flags = 0;
+	int len;
+
+	if (spec.field_width == 0)
+		return buf;				/* nothing to print */
+
+	if (ZERO_OR_NULL_PTR(addr))
+		return string(buf, end, NULL, spec);	/* NULL pointer */
+
+
+	do {
+		switch (fmt[count++]) {
+		case 'a':
+			flags |= ESCAPE_ANY;
+			break;
+		case 'c':
+			flags |= ESCAPE_SPECIAL;
+			break;
+		case 'h':
+			flags |= ESCAPE_HEX;
+			break;
+		case 'n':
+			flags |= ESCAPE_NULL;
+			break;
+		case 'o':
+			flags |= ESCAPE_OCTAL;
+			break;
+		case 'p':
+			flags |= ESCAPE_NP;
+			break;
+		case 's':
+			flags |= ESCAPE_SPACE;
+			break;
+		default:
+			found = false;
+			break;
+		}
+	} while (found);
+
+	if (!flags)
+		flags = ESCAPE_ANY_NP;
+
+	len = spec.field_width < 0 ? 1 : spec.field_width;
+
+	/* Ignore the error. We print as many characters as we can */
+	string_escape_mem(addr, len, &buf, end - buf, flags, NULL);
+
+	return buf;
+}
+
+static noinline_for_stack
 char *uuid_string(char *buf, char *end, const u8 *addr,
 		  struct printf_spec spec, const char *fmt)
 {
@@ -1200,6 +1339,10 @@ int kptr_restrict __read_mostly;
  * - 'B' For backtraced symbolic direct pointers with offset
  * - 'R' For decoded struct resource, e.g., [mem 0x0-0x1f 64bit pref]
  * - 'r' For raw struct resource, e.g., [mem 0x0-0x1f flags 0x201]
+ * - 'b[l]' For a bitmap, the number of bits is determined by the field
+ *       width which must be explicitly specified either as part of the
+ *       format string '%32b[l]' or through '%*b[l]', [l] selects
+ *       range-list format instead of hex format
  * - 'M' For a 6-byte MAC address, it prints the address in the
  *       usual colon-separated hex notation
  * - 'm' For a 6-byte MAC address, it prints the hex address without colons
@@ -1221,6 +1364,17 @@ int kptr_restrict __read_mostly;
  * - '[Ii][4S][hnbl]' IPv4 addresses in host, network, big or little endian order
  * - 'I[6S]c' for IPv6 addresses printed as specified by
  *       http://tools.ietf.org/html/rfc5952
+ * - 'E[achnops]' For an escaped buffer, where rules are defined by combination
+ *                of the following flags (see string_escape_mem() for the
+ *                details):
+ *                  a - ESCAPE_ANY
+ *                  c - ESCAPE_SPECIAL
+ *                  h - ESCAPE_HEX
+ *                  n - ESCAPE_NULL
+ *                  o - ESCAPE_OCTAL
+ *                  p - ESCAPE_NP
+ *                  s - ESCAPE_SPACE
+ *                By default ESCAPE_ANY_NP is used.
  * - 'U' For a 16 byte UUID/GUID, it prints the UUID/GUID in the form
  *       "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
  *       Options for %pU are:
@@ -1285,6 +1439,13 @@ char *pointer(const char *fmt, char *buf, char *end, void *ptr,
 		return resource_string(buf, end, ptr, spec, fmt);
 	case 'h':
 		return hex_string(buf, end, ptr, spec, fmt);
+	case 'b':
+		switch (fmt[1]) {
+		case 'l':
+			return bitmap_list_string(buf, end, ptr, spec, fmt);
+		default:
+			return bitmap_string(buf, end, ptr, spec, fmt);
+		}
 	case 'M':			/* Colon separated: 00:01:02:03:04:05 */
 	case 'm':			/* Contiguous: 000102030405 */
 					/* [mM]F (FDDI) */
@@ -1321,6 +1482,8 @@ char *pointer(const char *fmt, char *buf, char *end, void *ptr,
 			}}
 		}
 		break;
+	case 'E':
+		return escaped_string(buf, end, ptr, spec, fmt);
 	case 'U':
 		return uuid_string(buf, end, ptr, spec, fmt);
 	case 'V':
@@ -1534,8 +1697,7 @@ qualifier:
 
 	case 'p':
 		spec->type = FORMAT_TYPE_PTR;
-		return fmt - start;
-		/* skip alnum */
+		return ++fmt - start;
 
 	case '%':
 		spec->type = FORMAT_TYPE_PERCENT_CHAR;
@@ -1619,6 +1781,8 @@ qualifier:
  * %pB output the name of a backtrace symbol with its offset
  * %pR output the address range in a struct resource with decoded flags
  * %pr output the address range in a struct resource with raw flags
+ * %pb output the bitmap with field width as the number of bits
+ * %pbl output the bitmap as range list with field width as the number of bits
  * %pM output a 6-byte MAC address with colons
  * %pMR output a 6-byte MAC address with colons in reversed order
  * %pMF output a 6-byte MAC address with dashes
@@ -1633,6 +1797,7 @@ qualifier:
  * %piS depending on sa_family of 'struct sockaddr *' print IPv4/IPv6 address
  * %pU[bBlL] print a UUID/GUID in big or little endian using lower or upper
  *   case.
+ * %*pE[achnops] print an escaped buffer
  * %*ph[CDN] a variable-length hex string with a separator (supports up to 64
  *           bytes of the input)
  * %n is ignored
@@ -1657,7 +1822,7 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args)
 
 	/* Reject out-of-range values early.  Large positive sizes are
 	   used for unknown buffer sizes. */
-	if (WARN_ON_ONCE((int) size < 0))
+	if (WARN_ON_ONCE(size > INT_MAX))
 		return 0;
 
 	str = buf;
@@ -1723,7 +1888,7 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args)
 			break;
 
 		case FORMAT_TYPE_PTR:
-			str = pointer(fmt+1, str, end, va_arg(args, void *),
+			str = pointer(fmt, str, end, va_arg(args, void *),
 				      spec);
 			while (isalnum(*fmt))
 				fmt++;
@@ -1937,7 +2102,7 @@ EXPORT_SYMBOL(sprintf);
  * @args: Arguments for the format string
  *
  * The format follows C99 vsnprintf, except %n is ignored, and its argument
- * is skiped.
+ * is skipped.
  *
  * The return value is the number of words(32bits) which would be generated for
  * the given input.
@@ -2161,7 +2326,7 @@ int bstr_printf(char *buf, size_t size, const char *fmt, const u32 *bin_buf)
 		}
 
 		case FORMAT_TYPE_PTR:
-			str = pointer(fmt+1, str, end, get_arg(void *), spec);
+			str = pointer(fmt, str, end, get_arg(void *), spec);
 			while (isalnum(*fmt))
 				fmt++;
 			break;

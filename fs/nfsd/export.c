@@ -20,6 +20,7 @@
 #include "nfsd.h"
 #include "nfsfh.h"
 #include "netns.h"
+#include "pnfs.h"
 
 #define NFSDDBG_FACILITY	NFSDDBG_EXPORT
 
@@ -545,6 +546,7 @@ static int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen)
 
 	exp.ex_client = dom;
 	exp.cd = cd;
+	exp.ex_devid_map = NULL;
 
 	/* expiry */
 	err = -EINVAL;
@@ -621,6 +623,8 @@ static int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen)
 		if (!gid_valid(exp.ex_anon_gid))
 			goto out4;
 		err = 0;
+
+		nfsd4_setup_layout_type(&exp);
 	}
 
 	expp = svc_export_lookup(&exp);
@@ -698,11 +702,12 @@ static void svc_export_init(struct cache_head *cnew, struct cache_head *citem)
 
 	kref_get(&item->ex_client->ref);
 	new->ex_client = item->ex_client;
-	new->ex_path.dentry = dget(item->ex_path.dentry);
-	new->ex_path.mnt = mntget(item->ex_path.mnt);
+	new->ex_path = item->ex_path;
+	path_get(&item->ex_path);
 	new->ex_fslocs.locations = NULL;
 	new->ex_fslocs.locations_count = 0;
 	new->ex_fslocs.migrated = 0;
+	new->ex_layout_type = 0;
 	new->ex_uuid = NULL;
 	new->cd = item->cd;
 }
@@ -717,6 +722,8 @@ static void export_update(struct cache_head *cnew, struct cache_head *citem)
 	new->ex_anon_uid = item->ex_anon_uid;
 	new->ex_anon_gid = item->ex_anon_gid;
 	new->ex_fsid = item->ex_fsid;
+	new->ex_devid_map = item->ex_devid_map;
+	item->ex_devid_map = NULL;
 	new->ex_uuid = item->ex_uuid;
 	item->ex_uuid = NULL;
 	new->ex_fslocs.locations = item->ex_fslocs.locations;
@@ -725,6 +732,7 @@ static void export_update(struct cache_head *cnew, struct cache_head *citem)
 	item->ex_fslocs.locations_count = 0;
 	new->ex_fslocs.migrated = item->ex_fslocs.migrated;
 	item->ex_fslocs.migrated = 0;
+	new->ex_layout_type = item->ex_layout_type;
 	new->ex_nflavors = item->ex_nflavors;
 	for (i = 0; i < MAX_SECINFO_LIST; i++) {
 		new->ex_flavors[i] = item->ex_flavors[i];
@@ -1145,6 +1153,7 @@ static struct flags {
 	{ NFSEXP_ALLSQUASH, {"all_squash", ""}},
 	{ NFSEXP_ASYNC, {"async", "sync"}},
 	{ NFSEXP_GATHERED_WRITES, {"wdelay", "no_wdelay"}},
+	{ NFSEXP_NOREADDIRPLUS, {"nordirplus", ""}},
 	{ NFSEXP_NOHIDE, {"nohide", ""}},
 	{ NFSEXP_CROSSMOUNT, {"crossmnt", ""}},
 	{ NFSEXP_NOSUBTREECHECK, {"no_subtree_check", ""}},
@@ -1253,7 +1262,7 @@ static int e_show(struct seq_file *m, void *p)
 		return 0;
 	}
 
-	cache_get(&exp->h);
+	exp_get(exp);
 	if (cache_check(cd, &exp->h, NULL))
 		return 0;
 	exp_put(exp);

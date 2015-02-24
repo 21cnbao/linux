@@ -21,6 +21,7 @@
 
 struct regmap;
 struct regulator_dev;
+struct regulator_config;
 struct regulator_init_data;
 struct regulator_enable_gpio;
 
@@ -203,6 +204,17 @@ enum regulator_type {
  *
  * @name: Identifying name for the regulator.
  * @supply_name: Identifying the regulator supply
+ * @of_match: Name used to identify regulator in DT.
+ * @regulators_node: Name of node containing regulator definitions in DT.
+ * @of_parse_cb: Optional callback called only if of_match is present.
+ *               Will be called for each regulator parsed from DT, during
+ *               init_data parsing.
+ *               The regulator_config passed as argument to the callback will
+ *               be a copy of config passed to regulator_register, valid only
+ *               for this particular call. Callback may freely change the
+ *               config but it cannot store it for later usage.
+ *               Callback should return 0 on success or negative ERRNO
+ *               indicating failure.
  * @id: Numerical identifier for the regulator.
  * @ops: Regulator operations table.
  * @irq: Interrupt number for the regulator.
@@ -218,6 +230,8 @@ enum regulator_type {
  * @linear_min_sel: Minimal selector for starting linear mapping
  * @fixed_uV: Fixed voltage of rails.
  * @ramp_delay: Time to settle down after voltage change (unit: uV/us)
+ * @linear_ranges: A constant table of possible voltage ranges.
+ * @n_linear_ranges: Number of entries in the @linear_ranges table.
  * @volt_table: Voltage mapping table (if table based mapping)
  *
  * @vsel_reg: Register for selector when using regulator_regmap_X_voltage_
@@ -238,14 +252,22 @@ enum regulator_type {
  * @bypass_val_off: Disabling value for control when using regmap set_bypass
  *
  * @enable_time: Time taken for initial enable of regulator (in uS).
+ * @off_on_delay: guard time (in uS), before re-enabling a regulator
+ *
+ * @of_map_mode: Maps a hardware mode defined in a DeviceTree to a standard mode
  */
 struct regulator_desc {
 	const char *name;
 	const char *supply_name;
+	const char *of_match;
+	const char *regulators_node;
+	int (*of_parse_cb)(struct device_node *,
+			    const struct regulator_desc *,
+			    struct regulator_config *);
 	int id;
 	bool continuous_voltage_range;
 	unsigned n_voltages;
-	struct regulator_ops *ops;
+	const struct regulator_ops *ops;
 	int irq;
 	enum regulator_type type;
 	struct module *owner;
@@ -276,6 +298,10 @@ struct regulator_desc {
 	unsigned int bypass_val_off;
 
 	unsigned int enable_time;
+
+	unsigned int off_on_delay;
+
+	unsigned int (*of_map_mode)(unsigned int mode);
 };
 
 /**
@@ -292,6 +318,9 @@ struct regulator_desc {
  *           NULL).
  * @regmap: regmap to use for core regmap helpers if dev_get_regulator() is
  *          insufficient.
+ * @ena_gpio_initialized: GPIO controlling regulator enable was properly
+ *                        initialized, meaning that >= 0 is a valid gpio
+ *                        identifier and < 0 is a non existent gpio.
  * @ena_gpio: GPIO controlling regulator enable.
  * @ena_gpio_invert: Sense for GPIO enable control.
  * @ena_gpio_flags: Flags to use when calling gpio_request_one()
@@ -303,6 +332,7 @@ struct regulator_config {
 	struct device_node *of_node;
 	struct regmap *regmap;
 
+	bool ena_gpio_initialized;
 	int ena_gpio;
 	unsigned int ena_gpio_invert:1;
 	unsigned int ena_gpio_flags;
@@ -348,6 +378,9 @@ struct regulator_dev {
 
 	struct regulator_enable_gpio *ena_pin;
 	unsigned int ena_gpio_state:1;
+
+	/* time when this regulator was disabled last time */
+	unsigned long last_off_jiffy;
 };
 
 struct regulator_dev *

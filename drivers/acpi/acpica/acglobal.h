@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2014, Intel Corp.
+ * Copyright (C) 2000 - 2015, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -297,7 +297,7 @@ ACPI_GLOBAL(u32, acpi_gbl_trace_dbg_layer);
  *
  ****************************************************************************/
 
-ACPI_GLOBAL(u8, acpi_gbl_db_output_flags);
+ACPI_INIT_GLOBAL(u8, acpi_gbl_db_output_flags, ACPI_DB_CONSOLE_OUTPUT);
 
 #ifdef ACPI_DISASSEMBLER
 
@@ -305,6 +305,7 @@ ACPI_GLOBAL(u8, acpi_gbl_db_output_flags);
 
 ACPI_INIT_GLOBAL(u8, acpi_gbl_no_resource_disassembly, FALSE);
 ACPI_INIT_GLOBAL(u8, acpi_gbl_ignore_noop_operator, FALSE);
+ACPI_INIT_GLOBAL(u8, acpi_gbl_cstyle_disassembly, TRUE);
 
 ACPI_GLOBAL(u8, acpi_gbl_db_opt_disasm);
 ACPI_GLOBAL(u8, acpi_gbl_db_opt_verbose);
@@ -362,6 +363,12 @@ ACPI_GLOBAL(u32, acpi_gbl_num_objects);
 #ifdef ACPI_APPLICATION
 
 ACPI_INIT_GLOBAL(ACPI_FILE, acpi_gbl_debug_file, NULL);
+ACPI_INIT_GLOBAL(ACPI_FILE, acpi_gbl_output_file, NULL);
+
+/* Print buffer */
+
+ACPI_GLOBAL(acpi_spinlock, acpi_gbl_print_lock);	/* For print buffer */
+ACPI_GLOBAL(char, acpi_gbl_print_buffer[1024]);
 
 #endif				/* ACPI_APPLICATION */
 

@@ -86,7 +86,7 @@ static __be32 nfsd_setuser_and_check_port(struct svc_rqst *rqstp,
 	int flags = nfsexp_flags(rqstp, exp);
 
 	/* Check if the request originated from a secure port. */
-	if (!rqstp->rq_secure && !(flags & NFSEXP_INSECURE_PORT)) {
+	if (!test_bit(RQ_SECURE, &rqstp->rq_flags) && !(flags & NFSEXP_INSECURE_PORT)) {
 		RPC_IFDEBUG(char buf[RPC_MAX_ADDRBUFLEN]);
 		dprintk("nfsd: request from insecure port %s!\n",
 		        svc_print_addr(rqstp, buf, sizeof(buf)));
@@ -114,8 +114,8 @@ static inline __be32 check_pseudo_root(struct svc_rqst *rqstp,
 	 * We're exposing only the directories and symlinks that have to be
 	 * traversed on the way to real exports:
 	 */
-	if (unlikely(!S_ISDIR(dentry->d_inode->i_mode) &&
-		     !S_ISLNK(dentry->d_inode->i_mode)))
+	if (unlikely(!d_is_dir(dentry) &&
+		     !d_is_symlink(dentry)))
 		return nfserr_stale;
 	/*
 	 * A pseudoroot export gives permission to access only one
@@ -162,7 +162,14 @@ static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp)
 			/* deprecated, convert to type 3 */
 			len = key_len(FSID_ENCODE_DEV)/4;
 			fh->fh_fsid_type = FSID_ENCODE_DEV;
-			fh->fh_fsid[0] = new_encode_dev(MKDEV(ntohl(fh->fh_fsid[0]), ntohl(fh->fh_fsid[1])));
+			/*
+			 * struct knfsd_fh uses host-endian fields, which are
+			 * sometimes used to hold net-endian values. This
+			 * confuses sparse, so we must use __force here to
+			 * keep it from complaining.
+			 */
+			fh->fh_fsid[0] = new_encode_dev(MKDEV(ntohl((__force __be32)fh->fh_fsid[0]),
+							ntohl((__force __be32)fh->fh_fsid[1])));
 			fh->fh_fsid[1] = fh->fh_fsid[2];
 		}
 		data_left -= len;
@@ -202,8 +209,10 @@ static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp)
 		 * fix that case easily.
 		 */
 		struct cred *new = prepare_creds();
-		if (!new)
-			return nfserrno(-ENOMEM);
+		if (!new) {
+			error =  nfserrno(-ENOMEM);
+			goto out;
+		}
 		new->cap_effective =
 			cap_raise_nfsd_set(new->cap_effective,
 					   new->cap_permitted);
@@ -250,7 +259,7 @@ static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp)
 		goto out;
 	}
 
-	if (S_ISDIR(dentry->d_inode->i_mode) &&
+	if (d_is_dir(dentry) &&
 			(dentry->d_flags & DCACHE_DISCONNECTED)) {
 		printk("nfsd: find_fh_dentry returned a DISCONNECTED directory: %pd2\n",
 				dentry);
@@ -405,7 +414,7 @@ static inline void _fh_update_old(struct dentry *dentry,
 {
 	fh->ofh_ino = ino_t_to_u32(dentry->d_inode->i_ino);
 	fh->ofh_generation = dentry->d_inode->i_generation;
-	if (S_ISDIR(dentry->d_inode->i_mode) ||
+	if (d_is_dir(dentry) ||
 	    (exp->ex_flags & NFSEXP_NOSUBTREECHECK))
 		fh->ofh_dirino = 0;
 }
@@ -539,8 +548,7 @@ fh_compose(struct svc_fh *fhp, struct svc_export *exp, struct dentry *dentry,
 		       dentry);
 
 	fhp->fh_dentry = dget(dentry); /* our internal copy */
-	fhp->fh_export = exp;
-	cache_get(&exp->h);
+	fhp->fh_export = exp_get(exp);
 
 	if (fhp->fh_handle.fh_version == 0xca) {
 		/* old style filehandle please */

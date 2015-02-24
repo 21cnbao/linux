@@ -58,20 +58,23 @@ static int cpu_hotplug_disabled;
 
 static struct {
 	struct task_struct *active_writer;
-	struct mutex lock; /* Synchronizes accesses to refcount, */
+	/* wait queue to wake up the active_writer */
+	wait_queue_head_t wq;
+	/* verifies that no writer will get active while readers are active */
+	struct mutex lock;
 	/*
 	 * Also blocks the new readers during
 	 * an ongoing cpu hotplug operation.
 	 */
-	int refcount;
+	atomic_t refcount;
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lockdep_map dep_map;
 #endif
 } cpu_hotplug = {
 	.active_writer = NULL,
+	.wq = __WAIT_QUEUE_HEAD_INITIALIZER(cpu_hotplug.wq),
 	.lock = __MUTEX_INITIALIZER(cpu_hotplug.lock),
-	.refcount = 0,
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	.dep_map = {.name = "cpu_hotplug.lock" },
 #endif
@@ -79,8 +82,11 @@ static struct {
 
 /* Lockdep annotations for get/put_online_cpus() and cpu_hotplug_begin/end() */
 #define cpuhp_lock_acquire_read() lock_map_acquire_read(&cpu_hotplug.dep_map)
+#define cpuhp_lock_acquire_tryread() \
+				  lock_map_acquire_tryread(&cpu_hotplug.dep_map)
 #define cpuhp_lock_acquire()      lock_map_acquire(&cpu_hotplug.dep_map)
 #define cpuhp_lock_release()      lock_map_release(&cpu_hotplug.dep_map)
+
 
 void get_online_cpus(void)
 {
@@ -89,24 +95,38 @@ void get_online_cpus(void)
 		return;
 	cpuhp_lock_acquire_read();
 	mutex_lock(&cpu_hotplug.lock);
-	cpu_hotplug.refcount++;
+	atomic_inc(&cpu_hotplug.refcount);
 	mutex_unlock(&cpu_hotplug.lock);
-
 }
 EXPORT_SYMBOL_GPL(get_online_cpus);
 
-void put_online_cpus(void)
+bool try_get_online_cpus(void)
 {
 	if (cpu_hotplug.active_writer == current)
-		return;
-	mutex_lock(&cpu_hotplug.lock);
-
-	if (WARN_ON(!cpu_hotplug.refcount))
-		cpu_hotplug.refcount++; /* try to fix things up */
-
-	if (!--cpu_hotplug.refcount && unlikely(cpu_hotplug.active_writer))
-		wake_up_process(cpu_hotplug.active_writer);
+		return true;
+	if (!mutex_trylock(&cpu_hotplug.lock))
+		return false;
+	cpuhp_lock_acquire_tryread();
+	atomic_inc(&cpu_hotplug.refcount);
 	mutex_unlock(&cpu_hotplug.lock);
+	return true;
+}
+EXPORT_SYMBOL_GPL(try_get_online_cpus);
+
+void put_online_cpus(void)
+{
+	int refcount;
+
+	if (cpu_hotplug.active_writer == current)
+		return;
+
+	refcount = atomic_dec_return(&cpu_hotplug.refcount);
+	if (WARN_ON(refcount < 0)) /* try to fix things up */
+		atomic_inc(&cpu_hotplug.refcount);
+
+	if (refcount <= 0 && waitqueue_active(&cpu_hotplug.wq))
+		wake_up(&cpu_hotplug.wq);
+
 	cpuhp_lock_release();
 
 }
@@ -136,17 +156,20 @@ EXPORT_SYMBOL_GPL(put_online_cpus);
  */
 void cpu_hotplug_begin(void)
 {
-	cpu_hotplug.active_writer = current;
+	DEFINE_WAIT(wait);
 
+	cpu_hotplug.active_writer = current;
 	cpuhp_lock_acquire();
+
 	for (;;) {
 		mutex_lock(&cpu_hotplug.lock);
-		if (likely(!cpu_hotplug.refcount))
-			break;
-		__set_current_state(TASK_UNINTERRUPTIBLE);
+		prepare_to_wait(&cpu_hotplug.wq, &wait, TASK_UNINTERRUPTIBLE);
+		if (likely(!atomic_read(&cpu_hotplug.refcount)))
+				break;
 		mutex_unlock(&cpu_hotplug.lock);
 		schedule();
 	}
+	finish_wait(&cpu_hotplug.wq, &wait);
 }
 
 void cpu_hotplug_done(void)
@@ -274,21 +297,28 @@ void clear_tasks_mm_cpumask(int cpu)
 	rcu_read_unlock();
 }
 
-static inline void check_for_tasks(int cpu)
+static inline void check_for_tasks(int dead_cpu)
 {
-	struct task_struct *p;
-	cputime_t utime, stime;
+	struct task_struct *g, *p;
 
-	write_lock_irq(&tasklist_lock);
-	for_each_process(p) {
-		task_cputime(p, &utime, &stime);
-		if (task_cpu(p) == cpu && p->state == TASK_RUNNING &&
-		    (utime || stime))
-			pr_warn("Task %s (pid = %d) is on cpu %d (state = %ld, flags = %x)\n",
-				p->comm, task_pid_nr(p), cpu,
-				p->state, p->flags);
-	}
-	write_unlock_irq(&tasklist_lock);
+	read_lock_irq(&tasklist_lock);
+	do_each_thread(g, p) {
+		if (!p->on_rq)
+			continue;
+		/*
+		 * We do the check with unlocked task_rq(p)->lock.
+		 * Order the reading to do not warn about a task,
+		 * which was running on this cpu in the past, and
+		 * it's just been woken on another cpu.
+		 */
+		rmb();
+		if (task_cpu(p) != dead_cpu)
+			continue;
+
+		pr_warn("Task %s (pid=%d) is on cpu %d (state=%ld, flags=%x)\n",
+			p->comm, task_pid_nr(p), dead_cpu, p->state, p->flags);
+	} while_each_thread(g, p);
+	read_unlock_irq(&tasklist_lock);
 }
 
 struct take_cpu_down_param {

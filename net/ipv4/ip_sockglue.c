@@ -37,6 +37,7 @@
 #include <net/route.h>
 #include <net/xfrm.h>
 #include <net/compat.h>
+#include <net/checksum.h>
 #if IS_ENABLED(CONFIG_IPV6)
 #include <net/transp_v6.h>
 #endif
@@ -44,14 +45,6 @@
 
 #include <linux/errqueue.h>
 #include <asm/uaccess.h>
-
-#define IP_CMSG_PKTINFO		1
-#define IP_CMSG_TTL		2
-#define IP_CMSG_TOS		4
-#define IP_CMSG_RECVOPTS	8
-#define IP_CMSG_RETOPTS		16
-#define IP_CMSG_PASSSEC		32
-#define IP_CMSG_ORIGDSTADDR     64
 
 /*
  *	SOL_IP control messages.
@@ -104,6 +97,20 @@ static void ip_cmsg_recv_retopts(struct msghdr *msg, struct sk_buff *skb)
 	put_cmsg(msg, SOL_IP, IP_RETOPTS, opt->optlen, opt->__data);
 }
 
+static void ip_cmsg_recv_checksum(struct msghdr *msg, struct sk_buff *skb,
+				  int offset)
+{
+	__wsum csum = skb->csum;
+
+	if (skb->ip_summed != CHECKSUM_COMPLETE)
+		return;
+
+	if (offset != 0)
+		csum = csum_sub(csum, csum_partial(skb->data, offset, 0));
+
+	put_cmsg(msg, SOL_IP, IP_CHECKSUM, sizeof(__wsum), &csum);
+}
+
 static void ip_cmsg_recv_security(struct msghdr *msg, struct sk_buff *skb)
 {
 	char *secdata;
@@ -144,47 +151,73 @@ static void ip_cmsg_recv_dstaddr(struct msghdr *msg, struct sk_buff *skb)
 	put_cmsg(msg, SOL_IP, IP_ORIGDSTADDR, sizeof(sin), &sin);
 }
 
-void ip_cmsg_recv(struct msghdr *msg, struct sk_buff *skb)
+void ip_cmsg_recv_offset(struct msghdr *msg, struct sk_buff *skb,
+			 int offset)
 {
 	struct inet_sock *inet = inet_sk(skb->sk);
 	unsigned int flags = inet->cmsg_flags;
 
 	/* Ordered by supposed usage frequency */
-	if (flags & 1)
+	if (flags & IP_CMSG_PKTINFO) {
 		ip_cmsg_recv_pktinfo(msg, skb);
-	if ((flags >>= 1) == 0)
-		return;
 
-	if (flags & 1)
+		flags &= ~IP_CMSG_PKTINFO;
+		if (!flags)
+			return;
+	}
+
+	if (flags & IP_CMSG_TTL) {
 		ip_cmsg_recv_ttl(msg, skb);
-	if ((flags >>= 1) == 0)
-		return;
 
-	if (flags & 1)
+		flags &= ~IP_CMSG_TTL;
+		if (!flags)
+			return;
+	}
+
+	if (flags & IP_CMSG_TOS) {
 		ip_cmsg_recv_tos(msg, skb);
-	if ((flags >>= 1) == 0)
-		return;
 
-	if (flags & 1)
+		flags &= ~IP_CMSG_TOS;
+		if (!flags)
+			return;
+	}
+
+	if (flags & IP_CMSG_RECVOPTS) {
 		ip_cmsg_recv_opts(msg, skb);
-	if ((flags >>= 1) == 0)
-		return;
 
-	if (flags & 1)
+		flags &= ~IP_CMSG_RECVOPTS;
+		if (!flags)
+			return;
+	}
+
+	if (flags & IP_CMSG_RETOPTS) {
 		ip_cmsg_recv_retopts(msg, skb);
-	if ((flags >>= 1) == 0)
-		return;
 
-	if (flags & 1)
+		flags &= ~IP_CMSG_RETOPTS;
+		if (!flags)
+			return;
+	}
+
+	if (flags & IP_CMSG_PASSSEC) {
 		ip_cmsg_recv_security(msg, skb);
 
-	if ((flags >>= 1) == 0)
-		return;
-	if (flags & 1)
+		flags &= ~IP_CMSG_PASSSEC;
+		if (!flags)
+			return;
+	}
+
+	if (flags & IP_CMSG_ORIGDSTADDR) {
 		ip_cmsg_recv_dstaddr(msg, skb);
 
+		flags &= ~IP_CMSG_ORIGDSTADDR;
+		if (!flags)
+			return;
+	}
+
+	if (flags & IP_CMSG_CHECKSUM)
+		ip_cmsg_recv_checksum(msg, skb, offset);
 }
-EXPORT_SYMBOL(ip_cmsg_recv);
+EXPORT_SYMBOL(ip_cmsg_recv_offset);
 
 int ip_cmsg_send(struct net *net, struct msghdr *msg, struct ipcm_cookie *ipc,
 		 bool allow_ipv6)
@@ -192,10 +225,10 @@ int ip_cmsg_send(struct net *net, struct msghdr *msg, struct ipcm_cookie *ipc,
 	int err, val;
 	struct cmsghdr *cmsg;
 
-	for (cmsg = CMSG_FIRSTHDR(msg); cmsg; cmsg = CMSG_NXTHDR(msg, cmsg)) {
+	for_each_cmsghdr(cmsg, msg) {
 		if (!CMSG_OK(msg, cmsg))
 			return -EINVAL;
-#if defined(CONFIG_IPV6)
+#if IS_ENABLED(CONFIG_IPV6)
 		if (allow_ipv6 &&
 		    cmsg->cmsg_level == SOL_IPV6 &&
 		    cmsg->cmsg_type == IPV6_PKTINFO) {
@@ -303,7 +336,7 @@ int ip_ra_control(struct sock *sk, unsigned char on,
 			}
 			/* dont let ip_call_ra_chain() use sk again */
 			ra->sk = NULL;
-			rcu_assign_pointer(*rap, ra->next);
+			RCU_INIT_POINTER(*rap, ra->next);
 			spin_unlock_bh(&ip_ra_lock);
 
 			if (ra->destructor)
@@ -325,7 +358,7 @@ int ip_ra_control(struct sock *sk, unsigned char on,
 	new_ra->sk = sk;
 	new_ra->destructor = destructor;
 
-	new_ra->next = ra;
+	RCU_INIT_POINTER(new_ra->next, ra);
 	rcu_assign_pointer(*rap, new_ra);
 	sock_hold(sk);
 	spin_unlock_bh(&ip_ra_lock);
@@ -399,13 +432,29 @@ void ip_local_error(struct sock *sk, int err, __be32 daddr, __be16 port, u32 inf
 		kfree_skb(skb);
 }
 
+static bool ipv4_pktinfo_prepare_errqueue(const struct sock *sk,
+					  const struct sk_buff *skb,
+					  int ee_origin)
+{
+	struct in_pktinfo *info = PKTINFO_SKB_CB(skb);
+
+	if ((ee_origin != SO_EE_ORIGIN_TIMESTAMPING) ||
+	    (!(sk->sk_tsflags & SOF_TIMESTAMPING_OPT_CMSG)) ||
+	    (!skb->dev))
+		return false;
+
+	info->ipi_spec_dst.s_addr = ip_hdr(skb)->saddr;
+	info->ipi_ifindex = skb->dev->ifindex;
+	return true;
+}
+
 /*
  *	Handle MSG_ERRQUEUE
  */
 int ip_recv_error(struct sock *sk, struct msghdr *msg, int len, int *addr_len)
 {
 	struct sock_exterr_skb *serr;
-	struct sk_buff *skb, *skb2;
+	struct sk_buff *skb;
 	DECLARE_SOCKADDR(struct sockaddr_in *, sin, msg->msg_name);
 	struct {
 		struct sock_extended_err ee;
@@ -414,8 +463,10 @@ int ip_recv_error(struct sock *sk, struct msghdr *msg, int len, int *addr_len)
 	int err;
 	int copied;
 
+	WARN_ON_ONCE(sk->sk_family == AF_INET6);
+
 	err = -EAGAIN;
-	skb = skb_dequeue(&sk->sk_error_queue);
+	skb = sock_dequeue_err_skb(sk);
 	if (skb == NULL)
 		goto out;
 
@@ -424,7 +475,7 @@ int ip_recv_error(struct sock *sk, struct msghdr *msg, int len, int *addr_len)
 		msg->msg_flags |= MSG_TRUNC;
 		copied = len;
 	}
-	err = skb_copy_datagram_iovec(skb, 0, msg->msg_iov, copied);
+	err = skb_copy_datagram_msg(skb, 0, msg, copied);
 	if (err)
 		goto out_free_skb;
 
@@ -432,7 +483,7 @@ int ip_recv_error(struct sock *sk, struct msghdr *msg, int len, int *addr_len)
 
 	serr = SKB_EXT_ERR(skb);
 
-	if (sin) {
+	if (sin && skb->len) {
 		sin->sin_family = AF_INET;
 		sin->sin_addr.s_addr = *(__be32 *)(skb_network_header(skb) +
 						   serr->addr_offset);
@@ -443,15 +494,14 @@ int ip_recv_error(struct sock *sk, struct msghdr *msg, int len, int *addr_len)
 
 	memcpy(&errhdr.ee, &serr->ee, sizeof(struct sock_extended_err));
 	sin = &errhdr.offender;
-	sin->sin_family = AF_UNSPEC;
-	if (serr->ee.ee_origin == SO_EE_ORIGIN_ICMP) {
-		struct inet_sock *inet = inet_sk(sk);
+	memset(sin, 0, sizeof(*sin));
 
+	if (skb->len &&
+	    (serr->ee.ee_origin == SO_EE_ORIGIN_ICMP ||
+	     ipv4_pktinfo_prepare_errqueue(sk, skb, serr->ee.ee_origin))) {
 		sin->sin_family = AF_INET;
 		sin->sin_addr.s_addr = ip_hdr(skb)->saddr;
-		sin->sin_port = 0;
-		memset(&sin->sin_zero, 0, sizeof(sin->sin_zero));
-		if (inet->cmsg_flags)
+		if (inet_sk(sk)->cmsg_flags)
 			ip_cmsg_recv(msg, skb);
 	}
 
@@ -461,17 +511,6 @@ int ip_recv_error(struct sock *sk, struct msghdr *msg, int len, int *addr_len)
 
 	msg->msg_flags |= MSG_ERRQUEUE;
 	err = copied;
-
-	/* Reset and regenerate socket error */
-	spin_lock_bh(&sk->sk_error_queue.lock);
-	sk->sk_err = 0;
-	skb2 = skb_peek(&sk->sk_error_queue);
-	if (skb2 != NULL) {
-		sk->sk_err = SKB_EXT_ERR(skb2)->ee.ee_errno;
-		spin_unlock_bh(&sk->sk_error_queue.lock);
-		sk->sk_error_report(sk);
-	} else
-		spin_unlock_bh(&sk->sk_error_queue.lock);
 
 out_free_skb:
 	kfree_skb(skb);
@@ -513,6 +552,7 @@ static int do_ip_setsockopt(struct sock *sk, int level,
 	case IP_MULTICAST_ALL:
 	case IP_MULTICAST_LOOP:
 	case IP_RECVORIGDSTADDR:
+	case IP_CHECKSUM:
 		if (optlen >= sizeof(int)) {
 			if (get_user(val, (int __user *) optval))
 				return -EFAULT;
@@ -609,6 +649,19 @@ static int do_ip_setsockopt(struct sock *sk, int level,
 			inet->cmsg_flags |= IP_CMSG_ORIGDSTADDR;
 		else
 			inet->cmsg_flags &= ~IP_CMSG_ORIGDSTADDR;
+		break;
+	case IP_CHECKSUM:
+		if (val) {
+			if (!(inet->cmsg_flags & IP_CMSG_CHECKSUM)) {
+				inet_inc_convert_csum(sk);
+				inet->cmsg_flags |= IP_CMSG_CHECKSUM;
+			}
+		} else {
+			if (inet->cmsg_flags & IP_CMSG_CHECKSUM) {
+				inet_dec_convert_csum(sk);
+				inet->cmsg_flags &= ~IP_CMSG_CHECKSUM;
+			}
+		}
 		break;
 	case IP_TOS:	/* This sets both TOS and Precedence */
 		if (sk->sk_type == SOCK_STREAM) {
@@ -1060,7 +1113,7 @@ e_inval:
 }
 
 /**
- * ipv4_pktinfo_prepare - transfert some info from rtable to skb
+ * ipv4_pktinfo_prepare - transfer some info from rtable to skb
  * @sk: socket
  * @skb: buffer
  *
@@ -1213,6 +1266,9 @@ static int do_ip_getsockopt(struct sock *sk, int level, int optname,
 	case IP_RECVORIGDSTADDR:
 		val = (inet->cmsg_flags & IP_CMSG_ORIGDSTADDR) != 0;
 		break;
+	case IP_CHECKSUM:
+		val = (inet->cmsg_flags & IP_CMSG_CHECKSUM) != 0;
+		break;
 	case IP_TOS:
 		val = inet->tos;
 		break;
@@ -1319,7 +1375,7 @@ static int do_ip_getsockopt(struct sock *sk, int level, int optname,
 		if (sk->sk_type != SOCK_STREAM)
 			return -ENOPROTOOPT;
 
-		msg.msg_control = optval;
+		msg.msg_control = (__force void *) optval;
 		msg.msg_controllen = len;
 		msg.msg_flags = flags;
 

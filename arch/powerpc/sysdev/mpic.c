@@ -24,7 +24,6 @@
 #include <linux/irq.h>
 #include <linux/smp.h>
 #include <linux/interrupt.h>
-#include <linux/bootmem.h>
 #include <linux/spinlock.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
@@ -960,7 +959,7 @@ void mpic_set_vector(unsigned int virq, unsigned int vector)
 	mpic_irq_write(src, MPIC_INFO(IRQ_VECTOR_PRI), vecpri);
 }
 
-void mpic_set_destination(unsigned int virq, unsigned int cpuid)
+static void mpic_set_destination(unsigned int virq, unsigned int cpuid)
 {
 	struct mpic *mpic = mpic_from_irq(virq);
 	unsigned int src = virq_to_hw(virq);
@@ -1930,7 +1929,7 @@ int __init smp_mpic_probe(void)
 
 	DBG("smp_mpic_probe()...\n");
 
-	nr_cpus = cpumask_weight(cpu_possible_mask);
+	nr_cpus = num_possible_cpus();
 
 	DBG("nr_cpus: %d\n", nr_cpus);
 

@@ -1070,9 +1070,7 @@ static int iucv_sock_sendmsg(struct kiocb *iocb, struct socket *sock,
 	txmsg.class = 0;
 
 	/* iterate over control messages */
-	for (cmsg = CMSG_FIRSTHDR(msg); cmsg;
-		cmsg = CMSG_NXTHDR(msg, cmsg)) {
-
+	for_each_cmsghdr(cmsg, msg) {
 		if (!CMSG_OK(msg, cmsg)) {
 			err = -EINVAL;
 			goto out;
@@ -1103,7 +1101,6 @@ static int iucv_sock_sendmsg(struct kiocb *iocb, struct socket *sock,
 		default:
 			err = -EINVAL;
 			goto out;
-			break;
 		}
 	}
 
@@ -1123,7 +1120,7 @@ static int iucv_sock_sendmsg(struct kiocb *iocb, struct socket *sock,
 	}
 	if (iucv->transport == AF_IUCV_TRANS_HIPER)
 		skb_reserve(skb, sizeof(struct af_iucv_trans_hdr) + ETH_HLEN);
-	if (memcpy_fromiovec(skb_put(skb, len), msg->msg_iov, len)) {
+	if (memcpy_from_msg(skb_put(skb, len), msg, len)) {
 		err = -EFAULT;
 		goto fail;
 	}
@@ -1356,7 +1353,7 @@ static int iucv_sock_recvmsg(struct kiocb *iocb, struct socket *sock,
 		sk->sk_shutdown = sk->sk_shutdown | RCV_SHUTDOWN;
 
 	cskb = skb;
-	if (skb_copy_datagram_iovec(cskb, offset, msg->msg_iov, copied)) {
+	if (skb_copy_datagram_msg(cskb, offset, msg, copied)) {
 		if (!(flags & MSG_PEEK))
 			skb_queue_head(&sk->sk_receive_queue, skb);
 		return -EFAULT;
@@ -1543,7 +1540,8 @@ static int iucv_sock_shutdown(struct socket *sock, int how)
 
 	sk->sk_shutdown |= how;
 	if (how == RCV_SHUTDOWN || how == SHUTDOWN_MASK) {
-		if (iucv->transport == AF_IUCV_TRANS_IUCV) {
+		if ((iucv->transport == AF_IUCV_TRANS_IUCV) &&
+		    iucv->path) {
 			err = pr_iucv->path_quiesce(iucv->path, NULL);
 			if (err)
 				err = -ENOTCONN;

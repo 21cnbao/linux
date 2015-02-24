@@ -524,6 +524,12 @@ static int p9_virtio_probe(struct virtio_device *vdev)
 	int err;
 	struct virtio_chan *chan;
 
+	if (!vdev->config->get) {
+		dev_err(&vdev->dev, "%s failure: config access disabled\n",
+			__func__);
+		return -EINVAL;
+	}
+
 	chan = kmalloc(sizeof(struct virtio_chan), GFP_KERNEL);
 	if (!chan) {
 		pr_err("Failed to allocate virtio 9P channel\n");
@@ -574,6 +580,8 @@ static int p9_virtio_probe(struct virtio_device *vdev)
 	chan->ring_bufs_avail = 1;
 	/* Ceiling limit to avoid denial of service attacks */
 	chan->p9_max_pages = nr_free_buffer_pages()/4;
+
+	virtio_device_ready(vdev);
 
 	mutex_lock(&virtio_9p_lock);
 	list_add_tail(&chan->chan_list, &virtio_chan_list);

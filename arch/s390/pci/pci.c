@@ -15,8 +15,8 @@
  *   Thomas Klein
  */
 
-#define COMPONENT "zPCI"
-#define pr_fmt(fmt) COMPONENT ": " fmt
+#define KMSG_COMPONENT "zpci"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/kernel.h>
 #include <linux/slab.h>
@@ -50,8 +50,8 @@ static DEFINE_SPINLOCK(zpci_list_lock);
 
 static struct irq_chip zpci_irq_chip = {
 	.name = "zPCI",
-	.irq_unmask = unmask_msi_irq,
-	.irq_mask = mask_msi_irq,
+	.irq_unmask = pci_msi_unmask_irq,
+	.irq_mask = pci_msi_mask_irq,
 };
 
 static DECLARE_BITMAP(zpci_domain, ZPCI_NR_DEVICES);
@@ -259,7 +259,10 @@ void __iowrite64_copy(void __iomem *to, const void *from, size_t count)
 }
 
 /* Create a virtual mapping cookie for a PCI BAR */
-void __iomem *pci_iomap(struct pci_dev *pdev, int bar, unsigned long max)
+void __iomem *pci_iomap_range(struct pci_dev *pdev,
+			      int bar,
+			      unsigned long offset,
+			      unsigned long max)
 {
 	struct zpci_dev *zdev =	get_zdev(pdev);
 	u64 addr;
@@ -270,14 +273,27 @@ void __iomem *pci_iomap(struct pci_dev *pdev, int bar, unsigned long max)
 
 	idx = zdev->bars[bar].map_idx;
 	spin_lock(&zpci_iomap_lock);
-	zpci_iomap_start[idx].fh = zdev->fh;
-	zpci_iomap_start[idx].bar = bar;
+	if (zpci_iomap_start[idx].count++) {
+		BUG_ON(zpci_iomap_start[idx].fh != zdev->fh ||
+		       zpci_iomap_start[idx].bar != bar);
+	} else {
+		zpci_iomap_start[idx].fh = zdev->fh;
+		zpci_iomap_start[idx].bar = bar;
+	}
+	/* Detect overrun */
+	BUG_ON(!zpci_iomap_start[idx].count);
 	spin_unlock(&zpci_iomap_lock);
 
 	addr = ZPCI_IOMAP_ADDR_BASE | ((u64) idx << 48);
-	return (void __iomem *) addr;
+	return (void __iomem *) addr + offset;
 }
-EXPORT_SYMBOL_GPL(pci_iomap);
+EXPORT_SYMBOL_GPL(pci_iomap_range);
+
+void __iomem *pci_iomap(struct pci_dev *dev, int bar, unsigned long maxlen)
+{
+	return pci_iomap_range(dev, bar, 0, maxlen);
+}
+EXPORT_SYMBOL(pci_iomap);
 
 void pci_iounmap(struct pci_dev *pdev, void __iomem *addr)
 {
@@ -285,8 +301,12 @@ void pci_iounmap(struct pci_dev *pdev, void __iomem *addr)
 
 	idx = (((__force u64) addr) & ~ZPCI_IOMAP_ADDR_BASE) >> 48;
 	spin_lock(&zpci_iomap_lock);
-	zpci_iomap_start[idx].fh = 0;
-	zpci_iomap_start[idx].bar = 0;
+	/* Detect underrun */
+	BUG_ON(!zpci_iomap_start[idx].count);
+	if (!--zpci_iomap_start[idx].count) {
+		zpci_iomap_start[idx].fh = 0;
+		zpci_iomap_start[idx].bar = 0;
+	}
 	spin_unlock(&zpci_iomap_lock);
 }
 EXPORT_SYMBOL_GPL(pci_iounmap);
@@ -369,8 +389,7 @@ int arch_setup_msi_irqs(struct pci_dev *pdev, int nvec, int type)
 
 	if (type == PCI_CAP_ID_MSI && nvec > 1)
 		return 1;
-	msi_vecs = min(nvec, ZPCI_MSI_VEC_MAX);
-	msi_vecs = min_t(unsigned int, msi_vecs, CONFIG_PCI_NR_MSI);
+	msi_vecs = min_t(unsigned int, nvec, zdev->max_msi);
 
 	/* Allocate adapter summary indicator bit */
 	rc = -EIO;
@@ -403,7 +422,7 @@ int arch_setup_msi_irqs(struct pci_dev *pdev, int nvec, int type)
 		msg.data = hwirq;
 		msg.address_lo = zdev->msi_addr & 0xffffffff;
 		msg.address_hi = zdev->msi_addr >> 32;
-		write_msi_msg(irq, &msg);
+		pci_write_msi_msg(irq, &msg);
 		airq_iv_set_data(zdev->aibv, hwirq, irq);
 		hwirq++;
 	}
@@ -448,9 +467,9 @@ void arch_teardown_msi_irqs(struct pci_dev *pdev)
 	/* Release MSI interrupts */
 	list_for_each_entry(msi, &pdev->msi_list, list) {
 		if (msi->msi_attrib.is_msix)
-			default_msix_mask_irq(msi, 1);
+			__pci_msix_desc_mask_irq(msi, 1);
 		else
-			default_msi_mask_irq(msi, 1, 1);
+			__pci_msi_desc_mask_irq(msi, 1, 1);
 		irq_set_msi_desc(msi->irq, NULL);
 		irq_free_desc(msi->irq);
 		msi->msg.address_lo = 0;
@@ -474,7 +493,8 @@ static void zpci_map_resources(struct zpci_dev *zdev)
 		len = pci_resource_len(pdev, i);
 		if (!len)
 			continue;
-		pdev->resource[i].start = (resource_size_t) pci_iomap(pdev, i, 0);
+		pdev->resource[i].start =
+			(resource_size_t __force) pci_iomap(pdev, i, 0);
 		pdev->resource[i].end = pdev->resource[i].start + len - 1;
 	}
 }
@@ -489,7 +509,8 @@ static void zpci_unmap_resources(struct zpci_dev *zdev)
 		len = pci_resource_len(pdev, i);
 		if (!len)
 			continue;
-		pci_iounmap(pdev, (void *) pdev->resource[i].start);
+		pci_iounmap(pdev, (void __iomem __force *)
+			    pdev->resource[i].start);
 	}
 }
 

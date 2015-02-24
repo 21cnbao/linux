@@ -6,6 +6,7 @@
  * GPL LICENSE SUMMARY
  *
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
+ * Copyright(c) 2013 - 2014 Intel Mobile Communications GmbH
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -31,6 +32,7 @@
  * BSD LICENSE
  *
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
+ * Copyright(c) 2013 - 2014 Intel Mobile Communications GmbH
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -62,6 +64,7 @@
  *****************************************************************************/
 #include <linux/firmware.h>
 #include "iwl-trans.h"
+#include "iwl-csr.h"
 #include "mvm.h"
 #include "iwl-eeprom-parse.h"
 #include "iwl-eeprom-read.h"
@@ -69,7 +72,9 @@
 
 /* Default NVM size to read */
 #define IWL_NVM_DEFAULT_CHUNK_SIZE (2*1024)
-#define IWL_MAX_NVM_SECTION_SIZE 7000
+#define IWL_MAX_NVM_SECTION_SIZE	0x1b58
+#define IWL_MAX_NVM_8000A_SECTION_SIZE	0xffc
+#define IWL_MAX_NVM_8000B_SECTION_SIZE	0x1ffc
 
 #define NVM_WRITE_OPCODE 1
 #define NVM_READ_OPCODE 0
@@ -219,7 +224,7 @@ static int iwl_nvm_write_section(struct iwl_mvm *mvm, u16 section,
  * without overflowing, so no check is needed.
  */
 static int iwl_nvm_read_section(struct iwl_mvm *mvm, u16 section,
-				u8 *data)
+				u8 *data, u32 size_read)
 {
 	u16 length, offset = 0;
 	int ret;
@@ -231,6 +236,13 @@ static int iwl_nvm_read_section(struct iwl_mvm *mvm, u16 section,
 
 	/* Read the NVM until exhausted (reading less than requested) */
 	while (ret == length) {
+		/* Check no memory assumptions fail and cause an overflow */
+		if ((size_read + offset + length) >
+		    mvm->cfg->base_params->eeprom_size) {
+			IWL_ERR(mvm, "EEPROM size is too small for NVM\n");
+			return -ENOBUFS;
+		}
+
 		ret = iwl_nvm_read_chunk(mvm, section, offset, length, data);
 		if (ret < 0) {
 			IWL_DEBUG_EEPROM(mvm->trans->dev,
@@ -256,7 +268,7 @@ iwl_parse_nvm_sections(struct iwl_mvm *mvm)
 	if (mvm->trans->cfg->device_family != IWL_DEVICE_FAMILY_8000) {
 		if (!mvm->nvm_sections[NVM_SECTION_TYPE_SW].data ||
 		    !mvm->nvm_sections[mvm->cfg->nvm_hw_section_num].data) {
-			IWL_ERR(mvm, "Can't parse empty NVM sections\n");
+			IWL_ERR(mvm, "Can't parse empty OTP/NVM sections\n");
 			return NULL;
 		}
 	} else {
@@ -264,7 +276,7 @@ iwl_parse_nvm_sections(struct iwl_mvm *mvm)
 		if (!mvm->nvm_sections[NVM_SECTION_TYPE_SW].data ||
 		    !mvm->nvm_sections[NVM_SECTION_TYPE_REGULATORY].data) {
 			IWL_ERR(mvm,
-				"Can't parse empty family 8000 NVM sections\n");
+				"Can't parse empty family 8000 OTP/NVM sections\n");
 			return NULL;
 		}
 		/* MAC_OVERRIDE or at least HW section must exist */
@@ -326,13 +338,26 @@ static int iwl_mvm_read_external_nvm(struct iwl_mvm *mvm)
 		u8 data[];
 	} *file_sec;
 	const u8 *eof, *temp;
+	int max_section_size;
+	const __le32 *dword_buff;
 
 #define NVM_WORD1_LEN(x) (8 * (x & 0x03FF))
 #define NVM_WORD2_ID(x) (x >> 12)
 #define NVM_WORD2_LEN_FAMILY_8000(x) (2 * ((x & 0xFF) << 8 | x >> 8))
 #define NVM_WORD1_ID_FAMILY_8000(x) (x >> 4)
+#define NVM_HEADER_0	(0x2A504C54)
+#define NVM_HEADER_1	(0x4E564D2A)
+#define NVM_HEADER_SIZE	(4 * sizeof(u32))
 
 	IWL_DEBUG_EEPROM(mvm->trans->dev, "Read from external NVM\n");
+
+	/* Maximal size depends on HW family and step */
+	if (mvm->trans->cfg->device_family != IWL_DEVICE_FAMILY_8000)
+		max_section_size = IWL_MAX_NVM_SECTION_SIZE;
+	else if (CSR_HW_REV_STEP(mvm->trans->hw_rev) == SILICON_A_STEP)
+		max_section_size = IWL_MAX_NVM_8000A_SECTION_SIZE;
+	else /* Family 8000 B-step or C-step */
+		max_section_size = IWL_MAX_NVM_8000B_SECTION_SIZE;
 
 	/*
 	 * Obtain NVM image via request_firmware. Since we already used
@@ -351,12 +376,6 @@ static int iwl_mvm_read_external_nvm(struct iwl_mvm *mvm)
 	IWL_INFO(mvm, "Loaded NVM file %s (%zu bytes)\n",
 		 mvm->nvm_file_name, fw_entry->size);
 
-	if (fw_entry->size < sizeof(*file_sec)) {
-		IWL_ERR(mvm, "NVM file too small\n");
-		ret = -EINVAL;
-		goto out;
-	}
-
 	if (fw_entry->size > MAX_NVM_FILE_LEN) {
 		IWL_ERR(mvm, "NVM file too large\n");
 		ret = -EINVAL;
@@ -364,8 +383,25 @@ static int iwl_mvm_read_external_nvm(struct iwl_mvm *mvm)
 	}
 
 	eof = fw_entry->data + fw_entry->size;
+	dword_buff = (__le32 *)fw_entry->data;
 
-	file_sec = (void *)fw_entry->data;
+	/* some NVM file will contain a header.
+	 * The header is identified by 2 dwords header as follow:
+	 * dword[0] = 0x2A504C54
+	 * dword[1] = 0x4E564D2A
+	 *
+	 * This header must be skipped when providing the NVM data to the FW.
+	 */
+	if (fw_entry->size > NVM_HEADER_SIZE &&
+	    dword_buff[0] == cpu_to_le32(NVM_HEADER_0) &&
+	    dword_buff[1] == cpu_to_le32(NVM_HEADER_1)) {
+		file_sec = (void *)(fw_entry->data + NVM_HEADER_SIZE);
+		IWL_INFO(mvm, "NVM Version %08X\n", le32_to_cpu(dword_buff[2]));
+		IWL_INFO(mvm, "NVM Manufacturing date %08X\n",
+			 le32_to_cpu(dword_buff[3]));
+	} else {
+		file_sec = (void *)fw_entry->data;
+	}
 
 	while (true) {
 		if (file_sec->data > eof) {
@@ -392,7 +428,7 @@ static int iwl_mvm_read_external_nvm(struct iwl_mvm *mvm)
 						le16_to_cpu(file_sec->word1));
 		}
 
-		if (section_size > IWL_MAX_NVM_SECTION_SIZE) {
+		if (section_size > max_section_size) {
 			IWL_ERR(mvm, "ERROR - section too large (%d)\n",
 				section_size);
 			ret = -EINVAL;
@@ -459,6 +495,7 @@ int iwl_mvm_load_nvm_to_nic(struct iwl_mvm *mvm)
 int iwl_nvm_init(struct iwl_mvm *mvm, bool read_nvm_from_nic)
 {
 	int ret, section;
+	u32 size_read = 0;
 	u8 *nvm_buffer, *temp;
 
 	if (WARN_ON_ONCE(mvm->cfg->nvm_hw_section_num >= NVM_MAX_NUM_SECTIONS))
@@ -475,9 +512,11 @@ int iwl_nvm_init(struct iwl_mvm *mvm, bool read_nvm_from_nic)
 			return -ENOMEM;
 		for (section = 0; section < NVM_MAX_NUM_SECTIONS; section++) {
 			/* we override the constness for initial read */
-			ret = iwl_nvm_read_section(mvm, section, nvm_buffer);
+			ret = iwl_nvm_read_section(mvm, section, nvm_buffer,
+						   size_read);
 			if (ret < 0)
 				continue;
+			size_read += ret;
 			temp = kmemdup(nvm_buffer, ret, GFP_KERNEL);
 			if (!temp) {
 				ret = -ENOMEM;
@@ -509,6 +548,8 @@ int iwl_nvm_init(struct iwl_mvm *mvm, bool read_nvm_from_nic)
 			}
 #endif
 		}
+		if (!size_read)
+			IWL_ERR(mvm, "OTP is blank\n");
 		kfree(nvm_buffer);
 	}
 
@@ -524,6 +565,8 @@ int iwl_nvm_init(struct iwl_mvm *mvm, bool read_nvm_from_nic)
 	mvm->nvm_data = iwl_parse_nvm_sections(mvm);
 	if (!mvm->nvm_data)
 		return -ENODATA;
+	IWL_DEBUG_EEPROM(mvm->trans->dev, "nvm version = %x\n",
+			 mvm->nvm_data->nvm_version);
 
 	return 0;
 }

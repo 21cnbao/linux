@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2014, Intel Corp.
+ * Copyright (C) 2000 - 2015, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -126,6 +126,7 @@
 typedef unsigned char u8;
 typedef unsigned char u8;
 typedef unsigned short u16;
+typedef short s16;
 typedef COMPILER_DEPENDENT_UINT64 u64;
 typedef COMPILER_DEPENDENT_INT64 s64;
 
@@ -516,7 +517,7 @@ typedef u64 acpi_integer;
 
 #define ACPI_TO_POINTER(i)              ACPI_ADD_PTR (void, (void *) NULL,(acpi_size) i)
 #define ACPI_TO_INTEGER(p)              ACPI_PTR_DIFF (p, (void *) NULL)
-#define ACPI_OFFSET(d, f)               (acpi_size) ACPI_PTR_DIFF (&(((d *)0)->f), (void *) NULL)
+#define ACPI_OFFSET(d, f)               ACPI_PTR_DIFF (&(((d *) 0)->f), (void *) NULL)
 #define ACPI_PHYSADDR_TO_PTR(i)         ACPI_TO_POINTER(i)
 #define ACPI_PTR_TO_PHYSADDR(i)         ACPI_TO_INTEGER(i)
 
@@ -611,8 +612,9 @@ typedef u64 acpi_integer;
 #define ACPI_NOTIFY_RESERVED            (u8) 0x0A
 #define ACPI_NOTIFY_LOCALITY_UPDATE     (u8) 0x0B
 #define ACPI_NOTIFY_SHUTDOWN_REQUEST    (u8) 0x0C
+#define ACPI_NOTIFY_AFFINITY_UPDATE     (u8) 0x0D
 
-#define ACPI_NOTIFY_MAX                 0x0C
+#define ACPI_NOTIFY_MAX                 0x0D
 
 /*
  * Types associated with ACPI names and objects. The first group of
@@ -719,7 +721,7 @@ typedef u32 acpi_event_type;
  *          |     | | +--- Enabled for wake?
  *          |     | +----- Set?
  *          |     +------- Has a handler?
- *          +----------- <Reserved>
+ *          +------------- <Reserved>
  */
 typedef u32 acpi_event_status;
 
@@ -727,18 +729,22 @@ typedef u32 acpi_event_status;
 #define ACPI_EVENT_FLAG_ENABLED         (acpi_event_status) 0x01
 #define ACPI_EVENT_FLAG_WAKE_ENABLED    (acpi_event_status) 0x02
 #define ACPI_EVENT_FLAG_SET             (acpi_event_status) 0x04
-#define ACPI_EVENT_FLAG_HANDLE		(acpi_event_status) 0x08
+#define ACPI_EVENT_FLAG_HAS_HANDLER     (acpi_event_status) 0x08
 
 /* Actions for acpi_set_gpe, acpi_gpe_wakeup, acpi_hw_low_set_gpe */
 
 #define ACPI_GPE_ENABLE                 0
 #define ACPI_GPE_DISABLE                1
 #define ACPI_GPE_CONDITIONAL_ENABLE     2
+#define ACPI_GPE_SAVE_MASK              4
+
+#define ACPI_GPE_ENABLE_SAVE            (ACPI_GPE_ENABLE | ACPI_GPE_SAVE_MASK)
+#define ACPI_GPE_DISABLE_SAVE           (ACPI_GPE_DISABLE | ACPI_GPE_SAVE_MASK)
 
 /*
  * GPE info flags - Per GPE
  * +-------+-+-+---+
- * |  7:4  |3|2|1:0|
+ * |  7:5  |4|3|2:0|
  * +-------+-+-+---+
  *     |    | |  |
  *     |    | |  +-- Type of dispatch:to method, handler, notify, or none
@@ -750,13 +756,15 @@ typedef u32 acpi_event_status;
 #define ACPI_GPE_DISPATCH_METHOD        (u8) 0x01
 #define ACPI_GPE_DISPATCH_HANDLER       (u8) 0x02
 #define ACPI_GPE_DISPATCH_NOTIFY        (u8) 0x03
-#define ACPI_GPE_DISPATCH_MASK          (u8) 0x03
+#define ACPI_GPE_DISPATCH_RAW_HANDLER   (u8) 0x04
+#define ACPI_GPE_DISPATCH_MASK          (u8) 0x07
+#define ACPI_GPE_DISPATCH_TYPE(flags)   ((u8) ((flags) & ACPI_GPE_DISPATCH_MASK))
 
-#define ACPI_GPE_LEVEL_TRIGGERED        (u8) 0x04
+#define ACPI_GPE_LEVEL_TRIGGERED        (u8) 0x08
 #define ACPI_GPE_EDGE_TRIGGERED         (u8) 0x00
-#define ACPI_GPE_XRUPT_TYPE_MASK        (u8) 0x04
+#define ACPI_GPE_XRUPT_TYPE_MASK        (u8) 0x08
 
-#define ACPI_GPE_CAN_WAKE               (u8) 0x08
+#define ACPI_GPE_CAN_WAKE               (u8) 0x10
 
 /*
  * Flags for GPE and Lock interfaces
@@ -1243,5 +1251,18 @@ struct acpi_memory_list {
 #define ACPI_OSI_WIN_VISTA_SP2          0x0A
 #define ACPI_OSI_WIN_7                  0x0B
 #define ACPI_OSI_WIN_8                  0x0C
+
+/* Definitions of file IO */
+
+#define ACPI_FILE_READING               0x01
+#define ACPI_FILE_WRITING               0x02
+#define ACPI_FILE_BINARY                0x04
+
+#define ACPI_FILE_BEGIN                 0x01
+#define ACPI_FILE_END                   0x02
+
+/* Definitions of getopt */
+
+#define ACPI_OPT_END                    -1
 
 #endif				/* __ACTYPES_H__ */

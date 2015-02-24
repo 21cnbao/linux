@@ -461,7 +461,7 @@ static ssize_t store_cache_disable(struct _cpuid4_info *this_leaf,
 
 	cpu = cpumask_first(to_cpumask(this_leaf->shared_cpu_map));
 
-	if (strict_strtoul(buf, 10, &val) < 0)
+	if (kstrtoul(buf, 10, &val) < 0)
 		return -EINVAL;
 
 	err = amd_set_l3_disable_slot(this_leaf->base.nb, cpu, slot, val);
@@ -511,7 +511,7 @@ store_subcaches(struct _cpuid4_info *this_leaf, const char *buf, size_t count,
 	if (!this_leaf->base.nb || !amd_nb_has_feature(AMD_NB_L3_PARTITIONING))
 		return -EINVAL;
 
-	if (strict_strtoul(buf, 16, &val) < 0)
+	if (kstrtoul(buf, 16, &val) < 0)
 		return -EINVAL;
 
 	if (amd_set_subcaches(cpu, val))
@@ -952,20 +952,18 @@ static ssize_t show_size(struct _cpuid4_info *this_leaf, char *buf,
 static ssize_t show_shared_cpu_map_func(struct _cpuid4_info *this_leaf,
 					int type, char *buf)
 {
-	ptrdiff_t len = PTR_ALIGN(buf + PAGE_SIZE - 1, PAGE_SIZE) - buf;
-	int n = 0;
+	const struct cpumask *mask = to_cpumask(this_leaf->shared_cpu_map);
+	int ret;
 
-	if (len > 1) {
-		const struct cpumask *mask;
-
-		mask = to_cpumask(this_leaf->shared_cpu_map);
-		n = type ?
-			cpulist_scnprintf(buf, len-2, mask) :
-			cpumask_scnprintf(buf, len-2, mask);
-		buf[n++] = '\n';
-		buf[n] = '\0';
-	}
-	return n;
+	if (type)
+		ret = scnprintf(buf, PAGE_SIZE - 1, "%*pbl",
+				cpumask_pr_args(mask));
+	else
+		ret = scnprintf(buf, PAGE_SIZE - 1, "%*pb",
+				cpumask_pr_args(mask));
+	buf[ret++] = '\n';
+	buf[ret] = '\0';
+	return ret;
 }
 
 static inline ssize_t show_shared_cpu_map(struct _cpuid4_info *leaf, char *buf,

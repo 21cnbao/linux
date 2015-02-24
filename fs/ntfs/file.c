@@ -1,7 +1,7 @@
 /*
  * file.c - NTFS kernel file operations.  Part of the Linux-NTFS project.
  *
- * Copyright (c) 2001-2011 Anton Altaparmakov and Tuxera Inc.
+ * Copyright (c) 2001-2014 Anton Altaparmakov and Tuxera Inc.
  *
  * This program/include file is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as published
@@ -19,6 +19,7 @@
  * Foundation,Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#include <linux/backing-dev.h>
 #include <linux/buffer_head.h>
 #include <linux/gfp.h>
 #include <linux/pagemap.h>
@@ -74,8 +75,6 @@ static int ntfs_file_open(struct inode *vi, struct file *filp)
  * ntfs_attr_extend_initialized - extend the initialized size of an attribute
  * @ni:			ntfs inode of the attribute to extend
  * @new_init_size:	requested new initialized size in bytes
- * @cached_page:	store any allocated but unused page here
- * @lru_pvec:		lru-buffering pagevec of the caller
  *
  * Extend the initialized size of an attribute described by the ntfs inode @ni
  * to @new_init_size bytes.  This involves zeroing any non-sparse space between
@@ -395,7 +394,6 @@ static inline void ntfs_fault_in_pages_readable_iovec(const struct iovec *iov,
  * @nr_pages:	number of page cache pages to obtain
  * @pages:	array of pages in which to return the obtained page cache pages
  * @cached_page: allocated but as yet unused page
- * @lru_pvec:	lru-buffering pagevec of caller
  *
  * Obtain @nr_pages locked page cache pages from the mapping @mapping and
  * starting at index @index.
@@ -413,7 +411,8 @@ static inline int __ntfs_grab_cache_pages(struct address_space *mapping,
 	BUG_ON(!nr_pages);
 	err = nr = 0;
 	do {
-		pages[nr] = find_lock_page(mapping, index);
+		pages[nr] = find_get_page_flags(mapping, index, FGP_LOCK |
+				FGP_ACCESSED);
 		if (!pages[nr]) {
 			if (!*cached_page) {
 				*cached_page = page_cache_alloc(mapping);
@@ -2093,7 +2092,7 @@ static ssize_t ntfs_file_aio_write_nolock(struct kiocb *iocb,
 	count = iov_length(iov, nr_segs);
 	pos = *ppos;
 	/* We can write back this queue in page reclaim. */
-	current->backing_dev_info = mapping->backing_dev_info;
+	current->backing_dev_info = inode_to_bdi(inode);
 	written = 0;
 	err = generic_write_checks(file, &pos, &count, S_ISBLK(inode->i_mode));
 	if (err)

@@ -220,7 +220,7 @@ static int up_to_host(struct mux_rx *r)
 static void do_rx(struct work_struct *work)
 {
 	struct mux_dev *mux_dev =
-		container_of(work, struct mux_dev , work_rx.work);
+		container_of(work, struct mux_dev, work_rx.work);
 	struct mux_rx *r;
 	struct rx_cxt *rx = (struct rx_cxt *)&mux_dev->rx;
 	unsigned long flags;
@@ -517,6 +517,7 @@ static int gdm_mux_probe(struct usb_interface *intf,
 	int ret;
 	int i;
 	struct usb_device *usbdev = interface_to_usbdev(intf);
+
 	bInterfaceNumber = intf->cur_altsetting->desc.bInterfaceNumber;
 
 	idVendor = __le16_to_cpu(usbdev->descriptor.idVendor);

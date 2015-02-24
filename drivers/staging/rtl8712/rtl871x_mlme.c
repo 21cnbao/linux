@@ -69,8 +69,8 @@ static sint _init_mlme_priv(struct _adapter *padapter)
 	pmlmepriv->free_bss_buf = pbuf;
 	pnetwork = (struct wlan_network *)pbuf;
 	for (i = 0; i < MAX_BSS_CNT; i++) {
-		_init_listhead(&(pnetwork->list));
-		list_insert_tail(&(pnetwork->list),
+		INIT_LIST_HEAD(&(pnetwork->list));
+		list_add_tail(&(pnetwork->list),
 				 &(pmlmepriv->free_bss_pool.queue));
 		pnetwork++;
 	}
@@ -89,12 +89,12 @@ struct wlan_network *_r8712_alloc_network(struct mlme_priv *pmlmepriv)
 	struct  __queue *free_queue = &pmlmepriv->free_bss_pool;
 	struct list_head *plist = NULL;
 
-	if (_queue_empty(free_queue) == true)
+	if (list_empty(&free_queue->queue))
 		return NULL;
 	spin_lock_irqsave(&free_queue->lock, irqL);
-	plist = get_next(&(free_queue->queue));
-	pnetwork = LIST_CONTAINOR(plist , struct wlan_network, list);
-	list_delete(&pnetwork->list);
+	plist = free_queue->queue.next;
+	pnetwork = LIST_CONTAINOR(plist, struct wlan_network, list);
+	list_del_init(&pnetwork->list);
 	pnetwork->last_scanned = jiffies;
 	pmlmepriv->num_of_scanned++;
 	spin_unlock_irqrestore(&free_queue->lock, irqL);
@@ -117,8 +117,8 @@ static void _free_network(struct mlme_priv *pmlmepriv,
 	if (delta_time < SCANQUEUE_LIFETIME)
 		return;
 	spin_lock_irqsave(&free_queue->lock, irqL);
-	list_delete(&pnetwork->list);
-	list_insert_tail(&pnetwork->list, &free_queue->queue);
+	list_del_init(&pnetwork->list);
+	list_add_tail(&pnetwork->list, &free_queue->queue);
 	pmlmepriv->num_of_scanned--;
 	spin_unlock_irqrestore(&free_queue->lock, irqL);
 }
@@ -132,8 +132,8 @@ static void _free_network_nolock(struct mlme_priv *pmlmepriv,
 		return;
 	if (pnetwork->fixed == true)
 		return;
-	list_delete(&pnetwork->list);
-	list_insert_tail(&pnetwork->list, get_list_head(free_queue));
+	list_del_init(&pnetwork->list);
+	list_add_tail(&pnetwork->list, &free_queue->queue);
 	pmlmepriv->num_of_scanned--;
 }
 
@@ -153,11 +153,11 @@ static struct wlan_network *_r8712_find_network(struct  __queue *scanned_queue,
 	if (is_zero_ether_addr(addr))
 		return NULL;
 	spin_lock_irqsave(&scanned_queue->lock, irqL);
-	phead = get_list_head(scanned_queue);
-	plist = get_next(phead);
+	phead = &scanned_queue->queue;
+	plist = phead->next;
 	while (plist != phead) {
 		pnetwork = LIST_CONTAINOR(plist, struct wlan_network, list);
-		plist = get_next(plist);
+		plist = plist->next;
 		if (!memcmp(addr, pnetwork->network.MacAddress, ETH_ALEN))
 			break;
 	}
@@ -174,11 +174,11 @@ static void _free_network_queue(struct _adapter *padapter)
 	struct  __queue *scanned_queue = &pmlmepriv->scanned_queue;
 
 	spin_lock_irqsave(&scanned_queue->lock, irqL);
-	phead = get_list_head(scanned_queue);
-	plist = get_next(phead);
+	phead = &scanned_queue->queue;
+	plist = phead->next;
 	while (end_of_queue_search(phead, plist) == false) {
 		pnetwork = LIST_CONTAINOR(plist, struct wlan_network, list);
-		plist = get_next(plist);
+		plist = plist->next;
 		_free_network(pmlmepriv, pnetwork);
 	}
 	spin_unlock_irqrestore(&scanned_queue->lock, irqL);
@@ -315,8 +315,8 @@ struct	wlan_network *r8712_get_oldest_wlan_network(
 	struct	wlan_network	*pwlan = NULL;
 	struct	wlan_network	*oldest = NULL;
 
-	phead = get_list_head(scanned_queue);
-	plist = get_next(phead);
+	phead = &scanned_queue->queue;
+	plist = phead->next;
 	while (1) {
 		if (end_of_queue_search(phead, plist) ==  true)
 			break;
@@ -327,7 +327,7 @@ struct	wlan_network *r8712_get_oldest_wlan_network(
 			    (unsigned long)pwlan->last_scanned))
 				oldest = pwlan;
 		}
-		plist = get_next(plist);
+		plist = plist->next;
 	}
 	return oldest;
 }
@@ -398,8 +398,8 @@ static void update_scanned_network(struct _adapter *adapter,
 	struct wlan_network *pnetwork = NULL;
 	struct wlan_network *oldest = NULL;
 
-	phead = get_list_head(queue);
-	plist = get_next(phead);
+	phead = &queue->queue;
+	plist = phead->next;
 
 	while (1) {
 		if (end_of_queue_search(phead, plist) == true)
@@ -413,14 +413,14 @@ static void update_scanned_network(struct _adapter *adapter,
 				(unsigned long)pnetwork->last_scanned))
 			oldest = pnetwork;
 
-		plist = get_next(plist);
+		plist = plist->next;
 	}
 
 
 	/* If we didn't find a match, then get a new network slot to initialize
 	 * with this beacon's information */
 	if (end_of_queue_search(phead, plist) == true) {
-		if (_queue_empty(&pmlmepriv->free_bss_pool) == true) {
+		if (list_empty(&pmlmepriv->free_bss_pool.queue)) {
 			/* If there are no more slots, expire the oldest */
 			pnetwork = oldest;
 			target->Rssi = (pnetwork->network.Rssi +
@@ -437,7 +437,7 @@ static void update_scanned_network(struct _adapter *adapter,
 			bssid_ex_sz = r8712_get_ndis_wlan_bssid_ex_sz(target);
 			target->Length = bssid_ex_sz;
 			memcpy(&pnetwork->network, target, bssid_ex_sz);
-			list_insert_tail(&pnetwork->list, &queue->queue);
+			list_add_tail(&pnetwork->list, &queue->queue);
 		}
 	} else {
 		/* we have an entry and we are going to update it. But
@@ -499,7 +499,7 @@ static int is_desired_network(struct _adapter *adapter,
 }
 
 /* TODO: Perry : For Power Management */
-void r8712_atimdone_event_callback(struct _adapter *adapter , u8 *pbuf)
+void r8712_atimdone_event_callback(struct _adapter *adapter, u8 *pbuf)
 {
 }
 
@@ -590,7 +590,7 @@ void r8712_surveydone_event_callback(struct _adapter *adapter, u8 *pbuf)
 	}
 
 	if (pmlmepriv->to_join == true) {
-		if ((check_fwstate(pmlmepriv, WIFI_ADHOC_STATE) == true)) {
+		if (check_fwstate(pmlmepriv, WIFI_ADHOC_STATE) == true) {
 			if (check_fwstate(pmlmepriv, _FW_LINKED) == false) {
 				set_fwstate(pmlmepriv, _FW_UNDER_LINKING);
 
@@ -923,7 +923,7 @@ void r8712_joinbss_event_callback(struct _adapter *adapter, u8 *pbuf)
 ignore_joinbss_callback:
 	spin_unlock_irqrestore(&pmlmepriv->lock, irqL);
 	if (sizeof(struct list_head) == 4 * sizeof(u32))
-		kfree((u8 *)pnetwork);
+		kfree(pnetwork);
 }
 
 void r8712_stassoc_event_callback(struct _adapter *adapter, u8 *pbuf)
@@ -1138,8 +1138,8 @@ int r8712_select_and_join_from_scan(struct mlme_priv *pmlmepriv)
 
 	adapter = (struct _adapter *)pmlmepriv->nic_hdl;
 	queue = &pmlmepriv->scanned_queue;
-	phead = get_list_head(queue);
-	pmlmepriv->pscanned = get_next(phead);
+	phead = &queue->queue;
+	pmlmepriv->pscanned = phead->next;
 	while (1) {
 		if (end_of_queue_search(phead, pmlmepriv->pscanned) == true) {
 			if ((pmlmepriv->assoc_by_rssi == true) &&
@@ -1153,7 +1153,7 @@ int r8712_select_and_join_from_scan(struct mlme_priv *pmlmepriv)
 					  struct wlan_network, list);
 		if (pnetwork == NULL)
 			return _FAIL;
-		pmlmepriv->pscanned = get_next(pmlmepriv->pscanned);
+		pmlmepriv->pscanned = pmlmepriv->pscanned->next;
 		if (pmlmepriv->assoc_by_bssid == true) {
 			dst_ssid = pnetwork->network.MacAddress;
 			src_ssid = pmlmepriv->assoc_bssid;
@@ -1212,13 +1212,13 @@ sint r8712_set_auth(struct _adapter *adapter,
 	struct cmd_obj *pcmd;
 	struct setauth_parm *psetauthparm;
 
-	pcmd = kmalloc(sizeof(struct cmd_obj), GFP_ATOMIC);
+	pcmd = kmalloc(sizeof(*pcmd), GFP_ATOMIC);
 	if (pcmd == NULL)
 		return _FAIL;
 
-	psetauthparm = kzalloc(sizeof(struct setauth_parm), GFP_ATOMIC);
+	psetauthparm = kzalloc(sizeof(*psetauthparm), GFP_ATOMIC);
 	if (psetauthparm == NULL) {
-		kfree((unsigned char *)pcmd);
+		kfree(pcmd);
 		return _FAIL;
 	}
 	psetauthparm->mode = (u8)psecuritypriv->AuthAlgrthm;
@@ -1227,7 +1227,7 @@ sint r8712_set_auth(struct _adapter *adapter,
 	pcmd->cmdsz = sizeof(struct setauth_parm);
 	pcmd->rsp = NULL;
 	pcmd->rspsz = 0;
-	_init_listhead(&pcmd->list);
+	INIT_LIST_HEAD(&pcmd->list);
 	r8712_enqueue_cmd(pcmdpriv, pcmd);
 	return _SUCCESS;
 }
@@ -1242,10 +1242,10 @@ sint r8712_set_key(struct _adapter *adapter,
 	u8 keylen;
 	sint ret = _SUCCESS;
 
-	pcmd = kmalloc(sizeof(struct cmd_obj), GFP_ATOMIC);
+	pcmd = kmalloc(sizeof(*pcmd), GFP_ATOMIC);
 	if (pcmd == NULL)
 		return _FAIL;
-	psetkeyparm = kzalloc(sizeof(struct setkey_parm), GFP_ATOMIC);
+	psetkeyparm = kzalloc(sizeof(*psetkeyparm), GFP_ATOMIC);
 	if (psetkeyparm == NULL) {
 		ret = _FAIL;
 		goto err_free_cmd;
@@ -1299,7 +1299,7 @@ sint r8712_set_key(struct _adapter *adapter,
 	pcmd->cmdsz =  (sizeof(struct setkey_parm));
 	pcmd->rsp = NULL;
 	pcmd->rspsz = 0;
-	_init_listhead(&pcmd->list);
+	INIT_LIST_HEAD(&pcmd->list);
 	r8712_enqueue_cmd(pcmdpriv, pcmd);
 	return ret;
 
@@ -1372,7 +1372,7 @@ static int SecIsInPMKIDList(struct _adapter *Adapter, u8 *bssid)
 sint r8712_restruct_sec_ie(struct _adapter *adapter, u8 *in_ie,
 		     u8 *out_ie, uint in_len)
 {
-	u8 authmode = 0, securitytype, match;
+	u8 authmode = 0, match;
 	u8 sec_ie[255], uncst_oui[4], bkup_ie[255];
 	u8 wpa_oui[4] = {0x0, 0x50, 0xf2, 0x01};
 	uint ielength, cnt, remove_cnt;
@@ -1399,21 +1399,17 @@ sint r8712_restruct_sec_ie(struct _adapter *adapter, u8 *in_ie,
 	switch (ndissecuritytype) {
 	case Ndis802_11Encryption1Enabled:
 	case Ndis802_11Encryption1KeyAbsent:
-		securitytype = _WEP40_;
 		uncst_oui[3] = 0x1;
 		break;
 	case Ndis802_11Encryption2Enabled:
 	case Ndis802_11Encryption2KeyAbsent:
-		securitytype = _TKIP_;
 		uncst_oui[3] = 0x2;
 		break;
 	case Ndis802_11Encryption3Enabled:
 	case Ndis802_11Encryption3KeyAbsent:
-		securitytype = _AES_;
 		uncst_oui[3] = 0x4;
 		break;
 	default:
-		securitytype = _NO_PRIVACY_;
 		break;
 	}
 	/*Search required WPA or WPA2 IE and copy to sec_ie[] */
@@ -1705,7 +1701,7 @@ unsigned int r8712_restructure_ht_ie(struct _adapter *padapter, u8 *in_ie,
 				     u8 *out_ie, uint in_len, uint *pout_len)
 {
 	u32 ielen, out_len;
-	unsigned char *p, *pframe;
+	unsigned char *p;
 	struct ieee80211_ht_cap ht_capie;
 	unsigned char WMM_IE[] = {0x00, 0x50, 0xf2, 0x02, 0x00, 0x01, 0x00};
 	struct mlme_priv *pmlmepriv = &padapter->mlmepriv;
@@ -1717,10 +1713,8 @@ unsigned int r8712_restructure_ht_ie(struct _adapter *padapter, u8 *in_ie,
 	if (p && (ielen > 0)) {
 		if (pqospriv->qos_option == 0) {
 			out_len = *pout_len;
-			pframe = r8712_set_ie(out_ie+out_len,
-					      _VENDOR_SPECIFIC_IE_,
-					      _WMM_IE_Length_,
-					       WMM_IE, pout_len);
+			r8712_set_ie(out_ie+out_len, _VENDOR_SPECIFIC_IE_,
+				     _WMM_IE_Length_, WMM_IE, pout_len);
 			pqospriv->qos_option = 1;
 		}
 		out_len = *pout_len;
@@ -1733,9 +1727,9 @@ unsigned int r8712_restructure_ht_ie(struct _adapter *padapter, u8 *in_ie,
 				    IEEE80211_HT_CAP_DSSSCCK40;
 		ht_capie.ampdu_params_info = (IEEE80211_HT_CAP_AMPDU_FACTOR &
 				0x03) | (IEEE80211_HT_CAP_AMPDU_DENSITY & 0x00);
-		pframe = r8712_set_ie(out_ie+out_len, _HT_CAPABILITY_IE_,
-				sizeof(struct ieee80211_ht_cap),
-				(unsigned char *)&ht_capie, pout_len);
+		r8712_set_ie(out_ie+out_len, _HT_CAPABILITY_IE_,
+			     sizeof(struct ieee80211_ht_cap),
+			     (unsigned char *)&ht_capie, pout_len);
 		phtpriv->ht_option = 1;
 	}
 	return phtpriv->ht_option;
@@ -1748,7 +1742,6 @@ static void update_ht_cap(struct _adapter *padapter, u8 *pie, uint ie_len)
 	int i, len;
 	struct sta_info *bmc_sta, *psta;
 	struct ieee80211_ht_cap *pht_capie;
-	struct ieee80211_ht_addt_info *pht_addtinfo;
 	struct recv_reorder_ctrl *preorder_ctrl;
 	struct mlme_priv *pmlmepriv = &padapter->mlmepriv;
 	struct ht_priv *phtpriv = &pmlmepriv->htpriv;
@@ -1801,8 +1794,6 @@ static void update_ht_cap(struct _adapter *padapter, u8 *pie, uint ie_len)
 	p = r8712_get_ie(pie + sizeof(struct NDIS_802_11_FIXED_IEs),
 		   _HT_ADD_INFO_IE_, &len,
 		   ie_len-sizeof(struct NDIS_802_11_FIXED_IEs));
-	if (p && len > 0)
-		pht_addtinfo = (struct ieee80211_ht_addt_info *)(p + 2);
 }
 
 void r8712_issue_addbareq_cmd(struct _adapter *padapter, int priority)

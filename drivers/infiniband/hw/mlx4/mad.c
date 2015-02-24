@@ -891,7 +891,7 @@ int mlx4_ib_mad_init(struct mlx4_ib_dev *dev)
 				agent = ib_register_mad_agent(&dev->ib_dev, p + 1,
 							      q ? IB_QPT_GSI : IB_QPT_SMI,
 							      NULL, 0, send_handler,
-							      NULL, NULL);
+							      NULL, NULL, 0);
 				if (IS_ERR(agent)) {
 					ret = PTR_ERR(agent);
 					goto err;
@@ -1951,7 +1951,8 @@ static int mlx4_ib_alloc_demux_ctx(struct mlx4_ib_dev *dev,
 	ctx->ib_dev = &dev->ib_dev;
 
 	for (i = 0;
-	     i < min(dev->dev->caps.sqp_demux, (u16)(dev->dev->num_vfs + 1));
+	     i < min(dev->dev->caps.sqp_demux,
+	     (u16)(dev->dev->persist->num_vfs + 1));
 	     i++) {
 		struct mlx4_active_ports actv_ports =
 			mlx4_get_active_ports(dev->dev, i);

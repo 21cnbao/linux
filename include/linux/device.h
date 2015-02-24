@@ -124,7 +124,7 @@ struct bus_type {
 
 	const struct dev_pm_ops *pm;
 
-	struct iommu_ops *iommu_ops;
+	const struct iommu_ops *iommu_ops;
 
 	struct subsys_private *p;
 	struct lock_class_key lock_key;
@@ -181,13 +181,14 @@ extern int bus_unregister_notifier(struct bus_type *bus,
  * with the device lock held in the core, so be careful.
  */
 #define BUS_NOTIFY_ADD_DEVICE		0x00000001 /* device added */
-#define BUS_NOTIFY_DEL_DEVICE		0x00000002 /* device removed */
-#define BUS_NOTIFY_BIND_DRIVER		0x00000003 /* driver about to be
+#define BUS_NOTIFY_DEL_DEVICE		0x00000002 /* device to be removed */
+#define BUS_NOTIFY_REMOVED_DEVICE	0x00000003 /* device removed */
+#define BUS_NOTIFY_BIND_DRIVER		0x00000004 /* driver about to be
 						      bound */
-#define BUS_NOTIFY_BOUND_DRIVER		0x00000004 /* driver bound to device */
-#define BUS_NOTIFY_UNBIND_DRIVER	0x00000005 /* driver about to be
+#define BUS_NOTIFY_BOUND_DRIVER		0x00000005 /* driver bound to device */
+#define BUS_NOTIFY_UNBIND_DRIVER	0x00000006 /* driver about to be
 						      unbound */
-#define BUS_NOTIFY_UNBOUND_DRIVER	0x00000006 /* driver is unbound
+#define BUS_NOTIFY_UNBOUND_DRIVER	0x00000007 /* driver is unbound
 						      from the device */
 
 extern struct kset *bus_get_kset(struct bus_type *bus);
@@ -605,6 +606,10 @@ extern int devres_release_group(struct device *dev, void *id);
 
 /* managed devm_k.alloc/kfree for device drivers */
 extern void *devm_kmalloc(struct device *dev, size_t size, gfp_t gfp);
+extern char *devm_kvasprintf(struct device *dev, gfp_t gfp, const char *fmt,
+			     va_list ap);
+extern __printf(3, 4)
+char *devm_kasprintf(struct device *dev, gfp_t gfp, const char *fmt, ...);
 static inline void *devm_kzalloc(struct device *dev, size_t size, gfp_t gfp)
 {
 	return devm_kmalloc(dev, size, gfp | __GFP_ZERO);
@@ -631,8 +636,6 @@ extern unsigned long devm_get_free_pages(struct device *dev,
 extern void devm_free_pages(struct device *dev, unsigned long addr);
 
 void __iomem *devm_ioremap_resource(struct device *dev, struct resource *res);
-void __iomem *devm_request_and_ioremap(struct device *dev,
-			struct resource *res);
 
 /* allows to add/remove a custom action to devres stack */
 int devm_add_action(struct device *dev, void (*action)(void *), void *data);
@@ -908,6 +911,11 @@ static inline void device_unlock(struct device *dev)
 	mutex_unlock(&dev->mutex);
 }
 
+static inline void device_lock_assert(struct device *dev)
+{
+	lockdep_assert_held(&dev->mutex);
+}
+
 void driver_init(void);
 
 /*
@@ -1030,22 +1038,22 @@ extern __printf(3, 4)
 int dev_printk_emit(int level, const struct device *dev, const char *fmt, ...);
 
 extern __printf(3, 4)
-int dev_printk(const char *level, const struct device *dev,
-	       const char *fmt, ...);
+void dev_printk(const char *level, const struct device *dev,
+		const char *fmt, ...);
 extern __printf(2, 3)
-int dev_emerg(const struct device *dev, const char *fmt, ...);
+void dev_emerg(const struct device *dev, const char *fmt, ...);
 extern __printf(2, 3)
-int dev_alert(const struct device *dev, const char *fmt, ...);
+void dev_alert(const struct device *dev, const char *fmt, ...);
 extern __printf(2, 3)
-int dev_crit(const struct device *dev, const char *fmt, ...);
+void dev_crit(const struct device *dev, const char *fmt, ...);
 extern __printf(2, 3)
-int dev_err(const struct device *dev, const char *fmt, ...);
+void dev_err(const struct device *dev, const char *fmt, ...);
 extern __printf(2, 3)
-int dev_warn(const struct device *dev, const char *fmt, ...);
+void dev_warn(const struct device *dev, const char *fmt, ...);
 extern __printf(2, 3)
-int dev_notice(const struct device *dev, const char *fmt, ...);
+void dev_notice(const struct device *dev, const char *fmt, ...);
 extern __printf(2, 3)
-int _dev_info(const struct device *dev, const char *fmt, ...);
+void _dev_info(const struct device *dev, const char *fmt, ...);
 
 #else
 
@@ -1057,35 +1065,35 @@ static inline __printf(3, 4)
 int dev_printk_emit(int level, const struct device *dev, const char *fmt, ...)
 { return 0; }
 
-static inline int __dev_printk(const char *level, const struct device *dev,
-			       struct va_format *vaf)
-{ return 0; }
+static inline void __dev_printk(const char *level, const struct device *dev,
+				struct va_format *vaf)
+{}
 static inline __printf(3, 4)
-int dev_printk(const char *level, const struct device *dev,
-	       const char *fmt, ...)
-{ return 0; }
+void dev_printk(const char *level, const struct device *dev,
+		const char *fmt, ...)
+{}
 
 static inline __printf(2, 3)
-int dev_emerg(const struct device *dev, const char *fmt, ...)
-{ return 0; }
+void dev_emerg(const struct device *dev, const char *fmt, ...)
+{}
 static inline __printf(2, 3)
-int dev_crit(const struct device *dev, const char *fmt, ...)
-{ return 0; }
+void dev_crit(const struct device *dev, const char *fmt, ...)
+{}
 static inline __printf(2, 3)
-int dev_alert(const struct device *dev, const char *fmt, ...)
-{ return 0; }
+void dev_alert(const struct device *dev, const char *fmt, ...)
+{}
 static inline __printf(2, 3)
-int dev_err(const struct device *dev, const char *fmt, ...)
-{ return 0; }
+void dev_err(const struct device *dev, const char *fmt, ...)
+{}
 static inline __printf(2, 3)
-int dev_warn(const struct device *dev, const char *fmt, ...)
-{ return 0; }
+void dev_warn(const struct device *dev, const char *fmt, ...)
+{}
 static inline __printf(2, 3)
-int dev_notice(const struct device *dev, const char *fmt, ...)
-{ return 0; }
+void dev_notice(const struct device *dev, const char *fmt, ...)
+{}
 static inline __printf(2, 3)
-int _dev_info(const struct device *dev, const char *fmt, ...)
-{ return 0; }
+void _dev_info(const struct device *dev, const char *fmt, ...)
+{}
 
 #endif
 
@@ -1111,9 +1119,43 @@ do {						     \
 ({								\
 	if (0)							\
 		dev_printk(KERN_DEBUG, dev, format, ##arg);	\
-	0;							\
 })
 #endif
+
+#ifdef CONFIG_PRINTK
+#define dev_level_once(dev_level, dev, fmt, ...)			\
+do {									\
+	static bool __print_once __read_mostly;				\
+									\
+	if (!__print_once) {						\
+		__print_once = true;					\
+		dev_level(dev, fmt, ##__VA_ARGS__);			\
+	}								\
+} while (0)
+#else
+#define dev_level_once(dev_level, dev, fmt, ...)			\
+do {									\
+	if (0)								\
+		dev_level(dev, fmt, ##__VA_ARGS__);			\
+} while (0)
+#endif
+
+#define dev_emerg_once(dev, fmt, ...)					\
+	dev_level_once(dev_emerg, dev, fmt, ##__VA_ARGS__)
+#define dev_alert_once(dev, fmt, ...)					\
+	dev_level_once(dev_alert, dev, fmt, ##__VA_ARGS__)
+#define dev_crit_once(dev, fmt, ...)					\
+	dev_level_once(dev_crit, dev, fmt, ##__VA_ARGS__)
+#define dev_err_once(dev, fmt, ...)					\
+	dev_level_once(dev_err, dev, fmt, ##__VA_ARGS__)
+#define dev_warn_once(dev, fmt, ...)					\
+	dev_level_once(dev_warn, dev, fmt, ##__VA_ARGS__)
+#define dev_notice_once(dev, fmt, ...)					\
+	dev_level_once(dev_notice, dev, fmt, ##__VA_ARGS__)
+#define dev_info_once(dev, fmt, ...)					\
+	dev_level_once(dev_info, dev, fmt, ##__VA_ARGS__)
+#define dev_dbg_once(dev, fmt, ...)					\
+	dev_level_once(dev_dbg, dev, fmt, ##__VA_ARGS__)
 
 #define dev_level_ratelimited(dev_level, dev, fmt, ...)			\
 do {									\
@@ -1172,7 +1214,6 @@ do {									\
 ({								\
 	if (0)							\
 		dev_printk(KERN_DEBUG, dev, format, ##arg);	\
-	0;							\
 })
 #endif
 

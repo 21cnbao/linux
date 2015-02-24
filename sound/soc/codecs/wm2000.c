@@ -683,7 +683,7 @@ static const struct snd_kcontrol_new wm2000_controls[] = {
 static int wm2000_anc_power_event(struct snd_soc_dapm_widget *w,
 				  struct snd_kcontrol *kcontrol, int event)
 {
-	struct snd_soc_codec *codec = w->codec;
+	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
 	struct wm2000_priv *wm2000 = dev_get_drvdata(codec->dev);
 	int ret;
 
@@ -826,10 +826,8 @@ static int wm2000_i2c_probe(struct i2c_client *i2c,
 
 	wm2000 = devm_kzalloc(&i2c->dev, sizeof(struct wm2000_priv),
 			      GFP_KERNEL);
-	if (wm2000 == NULL) {
-		dev_err(&i2c->dev, "Unable to allocate private data\n");
+	if (!wm2000)
 		return -ENOMEM;
-	}
 
 	mutex_init(&wm2000->lock);
 

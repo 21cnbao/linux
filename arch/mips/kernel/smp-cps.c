@@ -9,18 +9,19 @@
  */
 
 #include <linux/io.h>
+#include <linux/irqchip/mips-gic.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/smp.h>
 #include <linux/types.h>
 
-#include <asm/cacheflush.h>
-#include <asm/gic.h>
+#include <asm/bcache.h>
 #include <asm/mips-cm.h>
 #include <asm/mips-cpc.h>
 #include <asm/mips_mt.h>
 #include <asm/mipsregs.h>
 #include <asm/pm-cps.h>
+#include <asm/r4kcache.h>
 #include <asm/smp-cps.h>
 #include <asm/time.h>
 #include <asm/uasm.h>
@@ -132,8 +133,11 @@ static void __init cps_prepare_cpus(unsigned int max_cpus)
 	entry_code = (u32 *)&mips_cps_core_entry;
 	UASM_i_LA(&entry_code, 3, (long)mips_cm_base);
 	uasm_i_addiu(&entry_code, 16, 0, cca);
-	dma_cache_wback_inv((unsigned long)&mips_cps_core_entry,
-			    (void *)entry_code - (void *)&mips_cps_core_entry);
+	blast_dcache_range((unsigned long)&mips_cps_core_entry,
+			   (unsigned long)entry_code);
+	bc_wback_inv((unsigned long)&mips_cps_core_entry,
+		     (void *)entry_code - (void *)&mips_cps_core_entry);
+	__sync();
 
 	/* Allocate core boot configuration structs */
 	mips_cps_core_bootcfg = kcalloc(ncores, sizeof(*mips_cps_core_bootcfg),
@@ -269,8 +273,8 @@ static void cps_init_secondary(void)
 	if (cpu_has_mipsmt)
 		dmt();
 
-	change_c0_status(ST0_IM, STATUSF_IP3 | STATUSF_IP4 |
-				 STATUSF_IP6 | STATUSF_IP7);
+	change_c0_status(ST0_IM, STATUSF_IP2 | STATUSF_IP3 | STATUSF_IP4 |
+				 STATUSF_IP5 | STATUSF_IP6 | STATUSF_IP7);
 }
 
 static void cps_smp_finish(void)
@@ -360,7 +364,7 @@ void play_dead(void)
 static void wait_for_sibling_halt(void *ptr_cpu)
 {
 	unsigned cpu = (unsigned)ptr_cpu;
-	unsigned vpe_id = cpu_data[cpu].vpe_id;
+	unsigned vpe_id = cpu_vpe_id(&cpu_data[cpu]);
 	unsigned halted;
 	unsigned long flags;
 

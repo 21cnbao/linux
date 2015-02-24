@@ -26,7 +26,7 @@ enum {
 	PG_MAPPED,		/* page private set for buffered io */
 	PG_CLEAN,		/* write succeeded */
 	PG_COMMIT_TO_DS,	/* used by pnfs layouts */
-	PG_INODE_REF,		/* extra ref held by inode (head req only) */
+	PG_INODE_REF,		/* extra ref held by inode when in writeback */
 	PG_HEADLOCK,		/* page group lock of wb_head */
 	PG_TEARDOWN,		/* page group sync for destroy */
 	PG_UNLOCKPAGE,		/* page group sync bit in read path */
@@ -58,28 +58,35 @@ struct nfs_pageio_ops {
 	size_t	(*pg_test)(struct nfs_pageio_descriptor *, struct nfs_page *,
 			   struct nfs_page *);
 	int	(*pg_doio)(struct nfs_pageio_descriptor *);
+	unsigned int	(*pg_get_mirror_count)(struct nfs_pageio_descriptor *,
+				       struct nfs_page *);
+	void	(*pg_cleanup)(struct nfs_pageio_descriptor *);
 };
 
 struct nfs_rw_ops {
 	const fmode_t rw_mode;
-	struct nfs_rw_header *(*rw_alloc_header)(void);
-	void (*rw_free_header)(struct nfs_rw_header *);
-	void (*rw_release)(struct nfs_pgio_data *);
-	int  (*rw_done)(struct rpc_task *, struct nfs_pgio_data *, struct inode *);
-	void (*rw_result)(struct rpc_task *, struct nfs_pgio_data *);
-	void (*rw_initiate)(struct nfs_pgio_data *, struct rpc_message *,
+	struct nfs_pgio_header *(*rw_alloc_header)(void);
+	void (*rw_free_header)(struct nfs_pgio_header *);
+	void (*rw_release)(struct nfs_pgio_header *);
+	int  (*rw_done)(struct rpc_task *, struct nfs_pgio_header *,
+			struct inode *);
+	void (*rw_result)(struct rpc_task *, struct nfs_pgio_header *);
+	void (*rw_initiate)(struct nfs_pgio_header *, struct rpc_message *,
+			    const struct nfs_rpc_ops *,
 			    struct rpc_task_setup *, int);
 };
 
-struct nfs_pageio_descriptor {
+struct nfs_pgio_mirror {
 	struct list_head	pg_list;
 	unsigned long		pg_bytes_written;
 	size_t			pg_count;
 	size_t			pg_bsize;
 	unsigned int		pg_base;
-	unsigned char		pg_moreio : 1,
-				pg_recoalesce : 1;
+	unsigned char		pg_recoalesce : 1;
+};
 
+struct nfs_pageio_descriptor {
+	unsigned char		pg_moreio : 1;
 	struct inode		*pg_inode;
 	const struct nfs_pageio_ops *pg_ops;
 	const struct nfs_rw_ops *pg_rw_ops;
@@ -90,7 +97,17 @@ struct nfs_pageio_descriptor {
 	struct pnfs_layout_segment *pg_lseg;
 	struct nfs_direct_req	*pg_dreq;
 	void			*pg_layout_private;
+	unsigned int		pg_bsize;	/* default bsize for mirrors */
+
+	u32			pg_mirror_count;
+	struct nfs_pgio_mirror	*pg_mirrors;
+	struct nfs_pgio_mirror	pg_mirrors_static[1];
+	struct nfs_pgio_mirror	*pg_mirrors_dynamic;
+	u32			pg_mirror_idx;	/* current mirror */
 };
+
+/* arbitrarily selected limit to number of mirrors */
+#define NFS_PAGEIO_DESCRIPTOR_MIRROR_MAX 16
 
 #define NFS_WBACK_BUSY(req)	(test_bit(PG_BUSY,&(req)->wb_flags))
 
@@ -111,6 +128,8 @@ extern	void nfs_pageio_init(struct nfs_pageio_descriptor *desc,
 			     int how);
 extern	int nfs_pageio_add_request(struct nfs_pageio_descriptor *,
 				   struct nfs_page *);
+extern  int nfs_pageio_resend(struct nfs_pageio_descriptor *,
+			      struct nfs_pgio_header *);
 extern	void nfs_pageio_complete(struct nfs_pageio_descriptor *desc);
 extern	void nfs_pageio_cond_complete(struct nfs_pageio_descriptor *, pgoff_t);
 extern size_t nfs_generic_pg_test(struct nfs_pageio_descriptor *desc,
@@ -119,7 +138,8 @@ extern size_t nfs_generic_pg_test(struct nfs_pageio_descriptor *desc,
 extern  int nfs_wait_on_request(struct nfs_page *);
 extern	void nfs_unlock_request(struct nfs_page *req);
 extern	void nfs_unlock_and_release_request(struct nfs_page *);
-extern void nfs_page_group_lock(struct nfs_page *);
+extern int nfs_page_group_lock(struct nfs_page *, bool);
+extern void nfs_page_group_lock_wait(struct nfs_page *);
 extern void nfs_page_group_unlock(struct nfs_page *);
 extern bool nfs_page_group_sync_on_bit(struct nfs_page *, unsigned int);
 

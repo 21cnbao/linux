@@ -33,7 +33,6 @@ struct sh_pfc_pin_range {
 struct sh_pfc {
 	struct device *dev;
 	const struct sh_pfc_soc_info *info;
-	void *soc_data;
 	spinlock_t lock;
 
 	unsigned int num_windows;
@@ -66,6 +65,7 @@ void sh_pfc_write_raw_reg(void __iomem *mapped_reg, unsigned long reg_width,
 int sh_pfc_get_pin_index(struct sh_pfc *pfc, unsigned int pin);
 int sh_pfc_config_mux(struct sh_pfc *pfc, unsigned mark, int pinmux_type);
 
+extern const struct sh_pfc_soc_info emev2_pinmux_info;
 extern const struct sh_pfc_soc_info r8a73a4_pinmux_info;
 extern const struct sh_pfc_soc_info r8a7740_pinmux_info;
 extern const struct sh_pfc_soc_info r8a7778_pinmux_info;
@@ -75,7 +75,6 @@ extern const struct sh_pfc_soc_info r8a7791_pinmux_info;
 extern const struct sh_pfc_soc_info sh7203_pinmux_info;
 extern const struct sh_pfc_soc_info sh7264_pinmux_info;
 extern const struct sh_pfc_soc_info sh7269_pinmux_info;
-extern const struct sh_pfc_soc_info sh7372_pinmux_info;
 extern const struct sh_pfc_soc_info sh73a0_pinmux_info;
 extern const struct sh_pfc_soc_info sh7720_pinmux_info;
 extern const struct sh_pfc_soc_info sh7722_pinmux_info;

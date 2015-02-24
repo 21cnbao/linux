@@ -37,9 +37,9 @@
 #define DEBUG_SUBSYSTEM S_CLASS
 
 #include <linux/seq_file.h>
-#include <asm/statfs.h>
-#include <lprocfs_status.h>
-#include <obd_class.h>
+#include <linux/statfs.h>
+#include "../include/lprocfs_status.h"
+#include "../include/obd_class.h"
 
 static int lmv_numobd_seq_show(struct seq_file *m, void *v)
 {
@@ -58,7 +58,7 @@ static const char *placement_name[] = {
 	[PLACEMENT_INVAL_POLICY]  = "INVAL"
 };
 
-static placement_policy_t placement_name2policy(char *name, int len)
+static enum placement_policy placement_name2policy(char *name, int len)
 {
 	int		     i;
 
@@ -69,7 +69,7 @@ static placement_policy_t placement_name2policy(char *name, int len)
 	return PLACEMENT_INVAL_POLICY;
 }
 
-static const char *placement_policy2name(placement_policy_t placement)
+static const char *placement_policy2name(enum placement_policy placement)
 {
 	LASSERT(placement < PLACEMENT_MAX_POLICY);
 	return placement_name[placement];
@@ -94,7 +94,7 @@ static ssize_t lmv_placement_seq_write(struct file *file,
 	struct obd_device *dev = ((struct seq_file *)file->private_data)->private;
 	char		     dummy[MAX_POLICY_STRING_SIZE + 1];
 	int		      len = count;
-	placement_policy_t       policy;
+	enum placement_policy       policy;
 	struct lmv_obd	  *lmv;
 
 	if (copy_from_user(dummy, buffer, MAX_POLICY_STRING_SIZE))
@@ -175,7 +175,7 @@ static int lmv_tgt_seq_show(struct seq_file *p, void *v)
 			  tgt->ltd_uuid.uuid, tgt->ltd_active ? "" : "IN");
 }
 
-struct seq_operations lmv_tgt_sops = {
+static struct seq_operations lmv_tgt_sops = {
 	.start		 = lmv_tgt_seq_start,
 	.stop		  = lmv_tgt_seq_stop,
 	.next		  = lmv_tgt_seq_next,
@@ -199,7 +199,7 @@ static int lmv_target_seq_open(struct inode *inode, struct file *file)
 
 LPROC_SEQ_FOPS_RO_TYPE(lmv, uuid);
 
-struct lprocfs_vars lprocfs_lmv_obd_vars[] = {
+static struct lprocfs_vars lprocfs_lmv_obd_vars[] = {
 	{ "numobd",	  &lmv_numobd_fops,	  NULL, 0 },
 	{ "placement",	  &lmv_placement_fops,    NULL, 0 },
 	{ "activeobd",	  &lmv_activeobd_fops,    NULL, 0 },

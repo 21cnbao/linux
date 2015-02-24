@@ -50,7 +50,11 @@ static void i40e_unmap_and_free_tx_resource(struct i40e_ring *ring,
 					    struct i40e_tx_buffer *tx_buffer)
 {
 	if (tx_buffer->skb) {
-		dev_kfree_skb_any(tx_buffer->skb);
+		if (tx_buffer->tx_flags & I40E_TX_FLAGS_FD_SB)
+			kfree(tx_buffer->raw_buf);
+		else
+			dev_kfree_skb_any(tx_buffer->skb);
+
 		if (dma_unmap_len(tx_buffer, len))
 			dma_unmap_single(ring->dev,
 					 dma_unmap_addr(tx_buffer, dma),
@@ -159,11 +163,13 @@ static bool i40e_check_tx_hang(struct i40e_ring *tx_ring)
 	 * pending but without time to complete it yet.
 	 */
 	if ((tx_ring->tx_stats.tx_done_old == tx_ring->stats.packets) &&
-	    tx_pending) {
+	    (tx_pending >= I40E_MIN_DESC_PENDING)) {
 		/* make sure it is true for two checks in a row */
 		ret = test_and_set_bit(__I40E_HANG_CHECK_ARMED,
 				       &tx_ring->state);
-	} else {
+	} else if (!(tx_ring->tx_stats.tx_done_old == tx_ring->stats.packets) ||
+		   !(tx_pending < I40E_MIN_DESC_PENDING) ||
+		   !(tx_pending > 0)) {
 		/* update completed stats and disarm the hang check */
 		tx_ring->tx_stats.tx_done_old = tx_ring->stats.packets;
 		clear_bit(__I40E_HANG_CHECK_ARMED, &tx_ring->state);
@@ -185,6 +191,8 @@ static inline u32 i40e_get_head(struct i40e_ring *tx_ring)
 
 	return le32_to_cpu(*(volatile __le32 *)head);
 }
+
+#define WB_STRIDE 0x3
 
 /**
  * i40e_clean_tx_irq - Reclaim resources after transmit completes
@@ -287,6 +295,14 @@ static bool i40e_clean_tx_irq(struct i40e_ring *tx_ring, int budget)
 	tx_ring->q_vector->tx.total_bytes += total_bytes;
 	tx_ring->q_vector->tx.total_packets += total_packets;
 
+	if (budget &&
+	    !((i & WB_STRIDE) == WB_STRIDE) &&
+	    !test_bit(__I40E_DOWN, &tx_ring->vsi->state) &&
+	    (I40E_DESC_UNUSED(tx_ring) != tx_ring->count))
+		tx_ring->arm_wb = true;
+	else
+		tx_ring->arm_wb = false;
+
 	if (check_for_tx_hang(tx_ring) && i40e_check_tx_hang(tx_ring)) {
 		/* schedule immediate reset if we believe we hung */
 		dev_info(tx_ring->dev, "Detected Tx Unit Hang\n"
@@ -335,6 +351,24 @@ static bool i40e_clean_tx_irq(struct i40e_ring *tx_ring, int budget)
 	}
 
 	return budget > 0;
+}
+
+/**
+ * i40e_force_wb -Arm hardware to do a wb on noncache aligned descriptors
+ * @vsi: the VSI we care about
+ * @q_vector: the vector  on which to force writeback
+ *
+ **/
+static void i40e_force_wb(struct i40e_vsi *vsi, struct i40e_q_vector *q_vector)
+{
+	u32 val = I40E_VFINT_DYN_CTLN_INTENA_MASK |
+		  I40E_VFINT_DYN_CTLN_SWINT_TRIG_MASK |
+		  I40E_VFINT_DYN_CTLN_SW_ITR_INDX_ENA_MASK;
+		  /* allow 00 to be written to the index */
+
+	wr32(&vsi->back->hw,
+	     I40E_VFINT_DYN_CTLN1(q_vector->v_idx + vsi->base_vector - 1),
+	     val);
 }
 
 /**
@@ -562,6 +596,8 @@ int i40evf_setup_rx_descriptors(struct i40e_ring *rx_ring)
 	if (!rx_ring->rx_bi)
 		goto err;
 
+	u64_stats_init(&rx_ring->syncp);
+
 	/* Round up to nearest 4K */
 	rx_ring->size = ring_is_16byte_desc_enabled(rx_ring)
 		? rx_ring->count * sizeof(union i40e_16byte_rx_desc)
@@ -740,7 +776,6 @@ static inline void i40e_rx_checksum(struct i40e_vsi *vsi,
 	ipv6_tunnel = (rx_ptype > I40E_RX_PTYPE_GRENAT6_MAC_PAY3) &&
 		      (rx_ptype < I40E_RX_PTYPE_GRENAT6_MACVLAN_IPV6_ICMP_PAY4);
 
-	skb->encapsulation = ipv4_tunnel || ipv6_tunnel;
 	skb->ip_summed = CHECKSUM_NONE;
 
 	/* Rx csum enabled and ip headers found? */
@@ -769,8 +804,6 @@ static inline void i40e_rx_checksum(struct i40e_vsi *vsi,
 
 	/* likely incorrect csum if alternate IP extension headers found */
 	if (ipv6 &&
-	    decoded.inner_prot == I40E_RX_PTYPE_INNER_PROT_TCP &&
-	    rx_error & (1 << I40E_RX_DESC_ERROR_L4E_SHIFT) &&
 	    rx_status & (1 << I40E_RX_DESC_STATUS_IPV6EXADD_SHIFT))
 		/* don't increment checksum err here, non-fatal err */
 		return;
@@ -816,6 +849,7 @@ static inline void i40e_rx_checksum(struct i40e_vsi *vsi,
 	}
 
 	skb->ip_summed = CHECKSUM_UNNECESSARY;
+	skb->csum_level = ipv4_tunnel || ipv6_tunnel;
 
 	return;
 
@@ -1061,6 +1095,7 @@ int i40evf_napi_poll(struct napi_struct *napi, int budget)
 	struct i40e_vsi *vsi = q_vector->vsi;
 	struct i40e_ring *ring;
 	bool clean_complete = true;
+	bool arm_wb = false;
 	int budget_per_ring;
 
 	if (test_bit(__I40E_DOWN, &vsi->state)) {
@@ -1071,8 +1106,10 @@ int i40evf_napi_poll(struct napi_struct *napi, int budget)
 	/* Since the actual Tx work is minimal, we can give the Tx a larger
 	 * budget and be more aggressive about cleaning up the Tx descriptors.
 	 */
-	i40e_for_each_ring(ring, q_vector->tx)
+	i40e_for_each_ring(ring, q_vector->tx) {
 		clean_complete &= i40e_clean_tx_irq(ring, vsi->work_limit);
+		arm_wb |= ring->arm_wb;
+	}
 
 	/* We attempt to distribute budget to each Rx queue fairly, but don't
 	 * allow the budget to go below 1 because that would exit polling early.
@@ -1083,8 +1120,11 @@ int i40evf_napi_poll(struct napi_struct *napi, int budget)
 		clean_complete &= i40e_clean_rx_irq(ring, budget_per_ring);
 
 	/* If work not completed, return budget and polling will return */
-	if (!clean_complete)
+	if (!clean_complete) {
+		if (arm_wb)
+			i40e_force_wb(vsi, q_vector);
 		return budget;
+	}
 
 	/* Work is done so exit the polling mode and re-enable the interrupt */
 	napi_complete(napi);
@@ -1118,8 +1158,8 @@ static int i40e_tx_prepare_vlan_flags(struct sk_buff *skb,
 	u32  tx_flags = 0;
 
 	/* if we have a HW VLAN tag being added, default to the HW one */
-	if (vlan_tx_tag_present(skb)) {
-		tx_flags |= vlan_tx_tag_get(skb) << I40E_TX_FLAGS_VLAN_SHIFT;
+	if (skb_vlan_tag_present(skb)) {
+		tx_flags |= skb_vlan_tag_get(skb) << I40E_TX_FLAGS_VLAN_SHIFT;
 		tx_flags |= I40E_TX_FLAGS_HW_VLAN;
 	/* else if it is a SW VLAN, check the next protocol and store the tag */
 	} else if (protocol == htons(ETH_P_8021Q)) {
@@ -1336,6 +1376,7 @@ static void i40e_create_tx_ctx(struct i40e_ring *tx_ring,
 	/* cpu_to_le32 and assign to struct fields */
 	context_desc->tunneling_params = cpu_to_le32(cd_tunneling);
 	context_desc->l2tag2 = cpu_to_le16(cd_l2tag2);
+	context_desc->rsvd = cpu_to_le16(0);
 	context_desc->type_cmd_tso_mss = cpu_to_le64(cd_type_cmd_tso_mss);
 }
 
@@ -1594,7 +1635,7 @@ static netdev_tx_t i40e_xmit_frame_ring(struct sk_buff *skb,
 		goto out_drop;
 
 	/* obtain protocol of skb */
-	protocol = skb->protocol;
+	protocol = vlan_get_protocol(skb);
 
 	/* record the location of the first descriptor for this packet */
 	first = &tx_ring->tx_bi[tx_ring->next_to_use];

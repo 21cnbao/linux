@@ -127,7 +127,7 @@ static int get_matching_mc(struct microcode_intel *mc_intel, int cpu)
 	return get_matching_microcode(csig, cpf, mc_intel, crev);
 }
 
-int apply_microcode(int cpu)
+static int apply_microcode_intel(int cpu)
 {
 	struct microcode_intel *mc_intel;
 	struct ucode_cpu_info *uci;
@@ -195,6 +195,11 @@ static enum ucode_state generic_load_microcode(int cpu, void *data, size_t size,
 	while (leftover) {
 		struct microcode_header_intel mc_header;
 		unsigned int mc_size;
+
+		if (leftover < sizeof(mc_header)) {
+			pr_err("error! Truncated header in microcode data file\n");
+			break;
+		}
 
 		if (get_ucode_data(&mc_header, ucode_ptr, sizeof(mc_header)))
 			break;
@@ -314,7 +319,7 @@ static struct microcode_ops microcode_intel_ops = {
 	.request_microcode_user		  = request_microcode_user,
 	.request_microcode_fw             = request_microcode_fw,
 	.collect_cpu_info                 = collect_cpu_info,
-	.apply_microcode                  = apply_microcode,
+	.apply_microcode                  = apply_microcode_intel,
 	.microcode_fini_cpu               = microcode_fini_cpu,
 };
 

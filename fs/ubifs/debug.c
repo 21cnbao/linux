@@ -334,9 +334,9 @@ void ubifs_dump_node(const struct ubifs_info *c, const void *node)
 		pr_err("\tkey_fmt        %d (%s)\n",
 		       (int)sup->key_fmt, get_key_fmt(sup->key_fmt));
 		pr_err("\tflags          %#x\n", sup_flags);
-		pr_err("\t  big_lpt      %u\n",
+		pr_err("\tbig_lpt        %u\n",
 		       !!(sup_flags & UBIFS_FLG_BIGLPT));
-		pr_err("\t  space_fixup  %u\n",
+		pr_err("\tspace_fixup    %u\n",
 		       !!(sup_flags & UBIFS_FLG_SPACE_FIXUP));
 		pr_err("\tmin_io_size    %u\n", le32_to_cpu(sup->min_io_size));
 		pr_err("\tleb_size       %u\n", le32_to_cpu(sup->leb_size));
@@ -2032,6 +2032,8 @@ static int check_leaf(struct ubifs_info *c, struct ubifs_zbranch *zbr,
 		long long blk_offs;
 		struct ubifs_data_node *dn = node;
 
+		ubifs_assert(zbr->len >= UBIFS_DATA_NODE_SZ);
+
 		/*
 		 * Search the inode node this data node belongs to and insert
 		 * it to the RB-tree of inodes.
@@ -2059,6 +2061,8 @@ static int check_leaf(struct ubifs_info *c, struct ubifs_zbranch *zbr,
 		int nlen;
 		struct ubifs_dent_node *dent = node;
 		struct fsck_inode *fscki1;
+
+		ubifs_assert(zbr->len >= UBIFS_DENT_NODE_SZ);
 
 		err = ubifs_validate_entry(c, dent);
 		if (err)
@@ -2462,7 +2466,7 @@ static int power_cut_emulated(struct ubifs_info *c, int lnum, int write)
 
 			if (chance(1, 2)) {
 				d->pc_delay = 1;
-				/* Fail withing 1 minute */
+				/* Fail within 1 minute */
 				delay = prandom_u32() % 60000;
 				d->pc_timeout = jiffies;
 				d->pc_timeout += msecs_to_jiffies(delay);

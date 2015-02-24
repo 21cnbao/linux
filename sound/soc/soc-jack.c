@@ -43,7 +43,7 @@ int snd_soc_jack_new(struct snd_soc_codec *codec, const char *id, int type,
 	INIT_LIST_HEAD(&jack->jack_zones);
 	BLOCKING_INIT_NOTIFIER_HEAD(&jack->notifier);
 
-	return snd_jack_new(codec->card->snd_card, id, type, &jack->jack);
+	return snd_jack_new(codec->component.card->snd_card, id, type, &jack->jack);
 }
 EXPORT_SYMBOL_GPL(snd_soc_jack_new);
 
@@ -116,7 +116,7 @@ EXPORT_SYMBOL_GPL(snd_soc_jack_report);
  *
  * @jack:  ASoC jack
  * @count: Number of zones
- * @zone:  Array of zones
+ * @zones:  Array of zones
  *
  * After this function has been called the zones specified in the
  * array will be associated with the jack.
@@ -260,7 +260,7 @@ static void snd_soc_jack_gpio_detect(struct snd_soc_jack_gpio *gpio)
 static irqreturn_t gpio_handler(int irq, void *data)
 {
 	struct snd_soc_jack_gpio *gpio = data;
-	struct device *dev = gpio->jack->codec->card->dev;
+	struct device *dev = gpio->jack->codec->component.card->dev;
 
 	trace_snd_soc_jack_irq(gpio->name);
 
@@ -309,7 +309,7 @@ int snd_soc_jack_add_gpios(struct snd_soc_jack *jack, int count,
 			/* GPIO descriptor */
 			gpios[i].desc = gpiod_get_index(gpios[i].gpiod_dev,
 							gpios[i].name,
-							gpios[i].idx);
+							gpios[i].idx, GPIOD_IN);
 			if (IS_ERR(gpios[i].desc)) {
 				ret = PTR_ERR(gpios[i].desc);
 				dev_err(gpios[i].gpiod_dev,
@@ -327,16 +327,13 @@ int snd_soc_jack_add_gpios(struct snd_soc_jack *jack, int count,
 				goto undo;
 			}
 
-			ret = gpio_request(gpios[i].gpio, gpios[i].name);
+			ret = gpio_request_one(gpios[i].gpio, GPIOF_IN,
+					       gpios[i].name);
 			if (ret)
 				goto undo;
 
 			gpios[i].desc = gpio_to_desc(gpios[i].gpio);
 		}
-
-		ret = gpiod_direction_input(gpios[i].desc);
-		if (ret)
-			goto err;
 
 		INIT_DELAYED_WORK(&gpios[i].work, gpio_work);
 		gpios[i].jack = jack;

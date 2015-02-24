@@ -34,6 +34,7 @@
 *.gcno
 modules.builtin
 Module.symvers
+*.dwo
 
 #
 # Top-level generic files
@@ -42,6 +43,7 @@ Module.symvers
 /TAGS
 /linux
 /vmlinux
+/vmlinux-gdb.py
 /vmlinuz
 /System.map
 /Module.markers
@@ -50,6 +52,11 @@ Module.symvers
 # Debian directory (make deb-pkg)
 #
 /debian/
+
+#
+# tar directory (make tar*-pkg)
+#
+/tar-install/
 
 #
 # git files that we don't want to ignore even it they are dot-files
@@ -103,3 +110,5 @@ extra/vexpress.img
 extra/zImage
 extra/vexpress-v2p-ca9.dtb
 extra/img
+# Kdevelop4
+*.kdev4

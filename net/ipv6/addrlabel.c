@@ -277,7 +277,7 @@ static int __ip6addrlbl_add(struct ip6addrlbl_entry *newp, int replace)
 		last = p;
 	}
 	if (last)
-		hlist_add_after_rcu(&last->list, &newp->list);
+		hlist_add_behind_rcu(&newp->list, &last->list);
 	else
 		hlist_add_head_rcu(&newp->list, &ip6addrlbl_table.head);
 out:
@@ -490,7 +490,8 @@ static int ip6addrlbl_fill(struct sk_buff *skb,
 		return -EMSGSIZE;
 	}
 
-	return nlmsg_end(skb, nlh);
+	nlmsg_end(skb, nlh);
+	return 0;
 }
 
 static int ip6addrlbl_dump(struct sk_buff *skb, struct netlink_callback *cb)
@@ -510,7 +511,7 @@ static int ip6addrlbl_dump(struct sk_buff *skb, struct netlink_callback *cb)
 					      cb->nlh->nlmsg_seq,
 					      RTM_NEWADDRLABEL,
 					      NLM_F_MULTI);
-			if (err <= 0)
+			if (err < 0)
 				break;
 		}
 		idx++;

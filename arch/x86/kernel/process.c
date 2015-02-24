@@ -28,6 +28,7 @@
 #include <asm/fpu-internal.h>
 #include <asm/debugreg.h>
 #include <asm/nmi.h>
+#include <asm/tlbflush.h>
 
 /*
  * per-CPU TSS segments. Threads are completely 'soft' on Linux,
@@ -64,14 +65,16 @@ EXPORT_SYMBOL_GPL(task_xstate_cachep);
  */
 int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 {
-	int ret;
-
 	*dst = *src;
-	if (fpu_allocated(&src->thread.fpu)) {
-		memset(&dst->thread.fpu, 0, sizeof(dst->thread.fpu));
-		ret = fpu_alloc(&dst->thread.fpu);
-		if (ret)
-			return ret;
+
+	dst->thread.fpu_counter = 0;
+	dst->thread.fpu.has_fpu = 0;
+	dst->thread.fpu.last_cpu = ~0;
+	dst->thread.fpu.state = NULL;
+	if (tsk_used_math(src)) {
+		int err = fpu_alloc(&dst->thread.fpu);
+		if (err)
+			return err;
 		fpu_copy(dst, src);
 	}
 	return 0;
@@ -93,6 +96,7 @@ void arch_task_cache_init(void)
         	kmem_cache_create("task_xstate", xstate_size,
 				  __alignof__(union thread_xstate),
 				  SLAB_PANIC | SLAB_NOTRACK, NULL);
+	setup_xstate_comp();
 }
 
 /*
@@ -138,7 +142,7 @@ void flush_thread(void)
 
 static void hard_disable_TSC(void)
 {
-	write_cr4(read_cr4() | X86_CR4_TSD);
+	cr4_set_bits(X86_CR4_TSD);
 }
 
 void disable_TSC(void)
@@ -155,7 +159,7 @@ void disable_TSC(void)
 
 static void hard_enable_TSC(void)
 {
-	write_cr4(read_cr4() & ~X86_CR4_TSD);
+	cr4_clear_bits(X86_CR4_TSD);
 }
 
 static void enable_TSC(void)

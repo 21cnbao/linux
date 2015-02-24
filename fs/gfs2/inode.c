@@ -543,10 +543,7 @@ static int link_dinode(struct gfs2_inode *dip, const struct qstr *name,
 	}
 
 	error = gfs2_dir_add(&dip->i_inode, name, ip, da);
-	if (error)
-		goto fail_end_trans;
 
-fail_end_trans:
 	gfs2_trans_end(sdp);
 fail_ipreserv:
 	gfs2_inplace_release(dip);
@@ -596,11 +593,10 @@ static int gfs2_create_inode(struct inode *dir, struct dentry *dentry,
 	struct gfs2_inode *dip = GFS2_I(dir), *ip;
 	struct gfs2_sbd *sdp = GFS2_SB(&dip->i_inode);
 	struct gfs2_glock *io_gl;
-	struct dentry *d;
 	int error, free_vfs_inode = 0;
 	u32 aflags = 0;
 	unsigned blocks = 1;
-	struct gfs2_diradd da = { .bh = NULL, };
+	struct gfs2_diradd da = { .bh = NULL, .save_loc = 1, };
 
 	if (!name->len || name->len > GFS2_FNAMESIZE)
 		return -ENAMETOOLONG;
@@ -624,20 +620,18 @@ static int gfs2_create_inode(struct inode *dir, struct dentry *dentry,
 	inode = gfs2_dir_search(dir, &dentry->d_name, !S_ISREG(mode) || excl);
 	error = PTR_ERR(inode);
 	if (!IS_ERR(inode)) {
-		d = d_splice_alias(inode, dentry);
-		error = PTR_ERR(d);
-		if (IS_ERR(d))
+		if (S_ISDIR(inode->i_mode)) {
+			iput(inode);
+			inode = ERR_PTR(-EISDIR);
 			goto fail_gunlock;
+		}
+		d_instantiate(dentry, inode);
 		error = 0;
 		if (file) {
-			if (S_ISREG(inode->i_mode)) {
-				WARN_ON(d != NULL);
+			if (S_ISREG(inode->i_mode))
 				error = finish_open(file, dentry, gfs2_open_common, opened);
-			} else {
-				error = finish_no_open(file, d);
-			}
-		} else {
-			dput(d);
+			else
+				error = finish_no_open(file, NULL);
 		}
 		gfs2_glock_dq_uninit(ghs);
 		return error;
@@ -670,6 +664,7 @@ static int gfs2_create_inode(struct inode *dir, struct dentry *dentry,
 	inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
 	gfs2_set_inode_blocks(inode, 1);
 	munge_mode_uid_gid(dip, inode);
+	check_and_update_goal(dip);
 	ip->i_goal = dip->i_goal;
 	ip->i_diskflags = 0;
 	ip->i_eattr = 0;
@@ -840,8 +835,10 @@ static struct dentry *__gfs2_lookup(struct inode *dir, struct dentry *dentry,
 	int error;
 
 	inode = gfs2_lookupi(dir, &dentry->d_name, 0);
-	if (!inode)
+	if (inode == NULL) {
+		d_add(dentry, NULL);
 		return NULL;
+	}
 	if (IS_ERR(inode))
 		return ERR_CAST(inode);
 
@@ -854,7 +851,6 @@ static struct dentry *__gfs2_lookup(struct inode *dir, struct dentry *dentry,
 
 	d = d_splice_alias(inode, dentry);
 	if (IS_ERR(d)) {
-		iput(inode);
 		gfs2_glock_dq_uninit(&gh);
 		return d;
 	}
@@ -896,7 +892,7 @@ static int gfs2_link(struct dentry *old_dentry, struct inode *dir,
 	struct gfs2_inode *ip = GFS2_I(inode);
 	struct gfs2_holder ghs[2];
 	struct buffer_head *dibh;
-	struct gfs2_diradd da = { .bh = NULL, };
+	struct gfs2_diradd da = { .bh = NULL, .save_loc = 1, };
 	int error;
 
 	if (S_ISDIR(inode->i_mode))
@@ -1041,11 +1037,7 @@ static int gfs2_unlink_ok(struct gfs2_inode *dip, const struct qstr *name,
 	if (error)
 		return error;
 
-	error = gfs2_dir_check(&dip->i_inode, name, ip);
-	if (error)
-		return error;
-
-	return 0;
+	return gfs2_dir_check(&dip->i_inode, name, ip);
 }
 
 /**
@@ -1241,22 +1233,24 @@ static int gfs2_atomic_open(struct inode *dir, struct dentry *dentry,
 	struct dentry *d;
 	bool excl = !!(flags & O_EXCL);
 
+	if (!d_unhashed(dentry))
+		goto skip_lookup;
+
 	d = __gfs2_lookup(dir, dentry, file, opened);
 	if (IS_ERR(d))
 		return PTR_ERR(d);
 	if (d != NULL)
 		dentry = d;
 	if (dentry->d_inode) {
-		if (!(*opened & FILE_OPENED)) {
-			if (d == NULL)
-				dget(dentry);
-			return finish_no_open(file, dentry);
-		}
+		if (!(*opened & FILE_OPENED))
+			return finish_no_open(file, d);
 		dput(d);
 		return 0;
 	}
 
 	BUG_ON(d != NULL);
+
+skip_lookup:
 	if (!(flags & O_CREAT))
 		return -ENOENT;
 
@@ -1334,7 +1328,7 @@ static int gfs2_rename(struct inode *odir, struct dentry *odentry,
 	struct gfs2_rgrpd *nrgd;
 	unsigned int num_gh;
 	int dir_rename = 0;
-	struct gfs2_diradd da = { .nr_blocks = 0, };
+	struct gfs2_diradd da = { .nr_blocks = 0, .save_loc = 0, };
 	unsigned int x;
 	int error;
 
@@ -1613,26 +1607,18 @@ int gfs2_permission(struct inode *inode, int mask)
 {
 	struct gfs2_inode *ip;
 	struct gfs2_holder i_gh;
-	struct gfs2_sbd *sdp = GFS2_SB(inode);
 	int error;
 	int unlock = 0;
-	int frozen_root = 0;
 
 
 	ip = GFS2_I(inode);
 	if (gfs2_glock_is_locked_by_me(ip->i_gl) == NULL) {
-		if (unlikely(gfs2_glock_is_held_excl(sdp->sd_freeze_gl) &&
-			     inode == sdp->sd_root_dir->d_inode &&
-			     atomic_inc_not_zero(&sdp->sd_frozen_root)))
-			frozen_root = 1;
-		else {
-			if (mask & MAY_NOT_BLOCK)
-				return -ECHILD;
-			error = gfs2_glock_nq_init(ip->i_gl, LM_ST_SHARED, LM_FLAG_ANY, &i_gh);
-			if (error)
-				return error;
-			unlock = 1;
-		}
+		if (mask & MAY_NOT_BLOCK)
+			return -ECHILD;
+		error = gfs2_glock_nq_init(ip->i_gl, LM_ST_SHARED, LM_FLAG_ANY, &i_gh);
+		if (error)
+			return error;
+		unlock = 1;
 	}
 
 	if ((mask & MAY_WRITE) && IS_IMMUTABLE(inode))
@@ -1641,8 +1627,6 @@ int gfs2_permission(struct inode *inode, int mask)
 		error = generic_permission(inode, mask);
 	if (unlock)
 		gfs2_glock_dq_uninit(&i_gh);
-	else if (frozen_root && atomic_dec_and_test(&sdp->sd_frozen_root))
-		wake_up(&sdp->sd_frozen_root_wait);
 
 	return error;
 }
@@ -1815,29 +1799,19 @@ static int gfs2_getattr(struct vfsmount *mnt, struct dentry *dentry,
 	struct inode *inode = dentry->d_inode;
 	struct gfs2_inode *ip = GFS2_I(inode);
 	struct gfs2_holder gh;
-	struct gfs2_sbd *sdp = GFS2_SB(inode);
 	int error;
 	int unlock = 0;
-	int frozen_root = 0;
 
 	if (gfs2_glock_is_locked_by_me(ip->i_gl) == NULL) {
-		if (unlikely(gfs2_glock_is_held_excl(sdp->sd_freeze_gl) &&
-			     inode == sdp->sd_root_dir->d_inode &&
-			     atomic_inc_not_zero(&sdp->sd_frozen_root)))
-			frozen_root = 1;
-		else {
-			error = gfs2_glock_nq_init(ip->i_gl, LM_ST_SHARED, LM_FLAG_ANY, &gh);
-			if (error)
-				return error;
-			unlock = 1;
-		}
+		error = gfs2_glock_nq_init(ip->i_gl, LM_ST_SHARED, LM_FLAG_ANY, &gh);
+		if (error)
+			return error;
+		unlock = 1;
 	}
 
 	generic_fillattr(inode, stat);
 	if (unlock)
 		gfs2_glock_dq_uninit(&gh);
-	else if (frozen_root && atomic_dec_and_test(&sdp->sd_frozen_root))
-		wake_up(&sdp->sd_frozen_root_wait);
 
 	return 0;
 }

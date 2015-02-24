@@ -18,13 +18,6 @@
 #include <usb_ops_linux.h>
 #include <rtw_sreset.h>
 
-struct zero_bulkout_context {
-	void *pbuf;
-	void *purb;
-	void *pirp;
-	void *padapter;
-};
-
 void rtl8723au_read_port_cancel(struct rtw_adapter *padapter)
 {
 	struct recv_buf *precvbuf;
@@ -53,18 +46,6 @@ static void usb_write_port23a_complete(struct urb *purb)
 	unsigned long irqL;
 
 	switch (pxmitbuf->flags) {
-	case VO_QUEUE_INX:
-		pxmitpriv->voq_cnt--;
-		break;
-	case VI_QUEUE_INX:
-		pxmitpriv->viq_cnt--;
-		break;
-	case BE_QUEUE_INX:
-		pxmitpriv->beq_cnt--;
-		break;
-	case BK_QUEUE_INX:
-		pxmitpriv->bkq_cnt--;
-		break;
 	case HIGH_QUEUE_INX:
 #ifdef CONFIG_8723AU_AP_MODE
 		rtw_chk_hi_queue_cmd23a(padapter);
@@ -96,8 +77,6 @@ static void usb_write_port23a_complete(struct urb *purb)
 		DBG_8723A("###=> urb_write_port_complete status(%d)\n",
 			  purb->status);
 		if (purb->status == -EPIPE || purb->status == -EPROTO) {
-			sreset_set_wifi_error_status23a(padapter,
-						     USB_WRITE_PORT_FAIL);
 		} else if (purb->status == -EINPROGRESS) {
 			RT_TRACE(_module_hci_ops_os_c_, _drv_err_,
 				 ("usb_write_port23a_complete: EINPROGESS\n"));
@@ -155,12 +134,10 @@ int rtl8723au_write_port(struct rtw_adapter *padapter, u32 addr, u32 cnt,
 
 	RT_TRACE(_module_hci_ops_os_c_, _drv_err_, ("+usb_write_port23a\n"));
 
-	if (padapter->bDriverStopped || padapter->bSurpriseRemoved ||
-	    padapter->pwrctrlpriv.pnp_bstop_trx) {
+	if (padapter->bDriverStopped || padapter->bSurpriseRemoved) {
 		RT_TRACE(_module_hci_ops_os_c_, _drv_err_,
-			 ("usb_write_port23a:( padapter->bDriverStopped || "
-			  "padapter->bSurpriseRemoved || "
-			  "adapter->pwrctrlpriv.pnp_bstop_trx)!!!\n"));
+			 ("%s:(padapter->bDriverStopped || "
+			  "padapter->bSurpriseRemoved)!!!\n", __func__));
 		rtw23a_sctx_done_err(&pxmitbuf->sctx, RTW_SCTX_DONE_TX_DENY);
 		goto exit;
 	}
@@ -170,19 +147,15 @@ int rtl8723au_write_port(struct rtw_adapter *padapter, u32 addr, u32 cnt,
 
 	switch (addr) {
 	case VO_QUEUE_INX:
-		pxmitpriv->voq_cnt++;
 		pxmitbuf->flags = VO_QUEUE_INX;
 		break;
 	case VI_QUEUE_INX:
-		pxmitpriv->viq_cnt++;
 		pxmitbuf->flags = VI_QUEUE_INX;
 		break;
 	case BE_QUEUE_INX:
-		pxmitpriv->beq_cnt++;
 		pxmitbuf->flags = BE_QUEUE_INX;
 		break;
 	case BK_QUEUE_INX:
-		pxmitpriv->bkq_cnt++;
 		pxmitbuf->flags = BK_QUEUE_INX;
 		break;
 	case HIGH_QUEUE_INX:

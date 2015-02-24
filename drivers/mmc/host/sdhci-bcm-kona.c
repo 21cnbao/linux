@@ -225,7 +225,7 @@ static struct sdhci_pltfm_data sdhci_pltfm_data_kona = {
 		SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN,
 };
 
-static struct __initconst of_device_id sdhci_bcm_kona_of_match[] = {
+static const struct of_device_id sdhci_bcm_kona_of_match[] = {
 	{ .compatible = "brcm,kona-sdhci"},
 	{ .compatible = "bcm,kona-sdhci"}, /* deprecated name */
 	{}
@@ -254,7 +254,9 @@ static int sdhci_bcm_kona_probe(struct platform_device *pdev)
 	kona_dev = sdhci_pltfm_priv(pltfm_priv);
 	mutex_init(&kona_dev->write_lock);
 
-	mmc_of_parse(host->mmc);
+	ret = mmc_of_parse(host->mmc);
+	if (ret)
+		goto err_pltfm_free;
 
 	if (!host->mmc->f_max) {
 		dev_err(&pdev->dev, "Missing max-freq for SDHCI cfg\n");
@@ -359,7 +361,6 @@ static int sdhci_bcm_kona_remove(struct platform_device *pdev)
 static struct platform_driver sdhci_bcm_kona_driver = {
 	.driver		= {
 		.name	= "sdhci-kona",
-		.owner	= THIS_MODULE,
 		.pm	= SDHCI_PLTFM_PMOPS,
 		.of_match_table = sdhci_bcm_kona_of_match,
 	},

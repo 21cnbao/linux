@@ -199,13 +199,13 @@ static int kempld_gpio_remove(struct platform_device *pdev)
 {
 	struct kempld_gpio_data *gpio = platform_get_drvdata(pdev);
 
-	return gpiochip_remove(&gpio->chip);
+	gpiochip_remove(&gpio->chip);
+	return 0;
 }
 
 static struct platform_driver kempld_gpio_driver = {
 	.driver = {
 		.name = "kempld-gpio",
-		.owner = THIS_MODULE,
 	},
 	.probe		= kempld_gpio_probe,
 	.remove		= kempld_gpio_remove,

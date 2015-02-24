@@ -21,9 +21,7 @@
 #include <linux/vfs.h>
 #include <linux/slab.h>
 #include <linux/pid_namespace.h>
-
-#include <asm/uaccess.h>
-
+#include <linux/uaccess.h>
 #include <linux/fs.h>
 #include <linux/vmalloc.h>
 
@@ -185,7 +183,7 @@ static int coda_fill_super(struct super_block *sb, void *data, int silent)
 		goto unlock_out;
 	}
 
-	error = bdi_setup_and_register(&vc->bdi, "coda", BDI_CAP_MAP_COPY);
+	error = bdi_setup_and_register(&vc->bdi, "coda");
 	if (error)
 		goto unlock_out;
 

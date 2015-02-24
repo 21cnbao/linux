@@ -245,6 +245,8 @@ IS_AM_SUBCLASS(437x, 0x437)
 #define soc_is_omap54xx()		0
 #define soc_is_omap543x()		0
 #define soc_is_dra7xx()			0
+#define soc_is_dra74x()			0
+#define soc_is_dra72x()			0
 
 #if defined(MULTI_OMAP2)
 # if defined(CONFIG_ARCH_OMAP2)
@@ -393,7 +395,11 @@ IS_OMAP_TYPE(3430, 0x3430)
 
 #if defined(CONFIG_SOC_DRA7XX)
 #undef soc_is_dra7xx
+#undef soc_is_dra74x
+#undef soc_is_dra72x
 #define soc_is_dra7xx()	(of_machine_is_compatible("ti,dra7"))
+#define soc_is_dra74x()	(of_machine_is_compatible("ti,dra74"))
+#define soc_is_dra72x()	(of_machine_is_compatible("ti,dra72"))
 #endif
 
 /* Various silicon revisions for omap2 */
@@ -417,13 +423,13 @@ IS_OMAP_TYPE(3430, 0x3430)
 #define OMAP3630_REV_ES1_1	(OMAP363X_CLASS | (0x1 << 8))
 #define OMAP3630_REV_ES1_2	(OMAP363X_CLASS | (0x2 << 8))
 
-#define TI816X_CLASS		0x81600034
+#define TI816X_CLASS		0x81600081
 #define TI8168_REV_ES1_0	TI816X_CLASS
 #define TI8168_REV_ES1_1	(TI816X_CLASS | (0x1 << 8))
 #define TI8168_REV_ES2_0	(TI816X_CLASS | (0x2 << 8))
 #define TI8168_REV_ES2_1	(TI816X_CLASS | (0x3 << 8))
 
-#define TI814X_CLASS		0x81400034
+#define TI814X_CLASS		0x81400081
 #define TI8148_REV_ES1_0	TI814X_CLASS
 #define TI8148_REV_ES2_0	(TI814X_CLASS | (0x1 << 8))
 #define TI8148_REV_ES2_1	(TI814X_CLASS | (0x2 << 8))
@@ -440,6 +446,7 @@ IS_OMAP_TYPE(3430, 0x3430)
 #define AM437X_CLASS		0x43700000
 #define AM437X_REV_ES1_0	(AM437X_CLASS | (0x10 << 8))
 #define AM437X_REV_ES1_1	(AM437X_CLASS | (0x11 << 8))
+#define AM437X_REV_ES1_2	(AM437X_CLASS | (0x12 << 8))
 
 #define OMAP443X_CLASS		0x44300044
 #define OMAP4430_REV_ES1_0	(OMAP443X_CLASS | (0x10 << 8))

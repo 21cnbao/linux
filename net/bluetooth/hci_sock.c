@@ -35,13 +35,32 @@ static atomic_t monitor_promisc = ATOMIC_INIT(0);
 
 /* ----- HCI socket interface ----- */
 
+/* Socket info */
+#define hci_pi(sk) ((struct hci_pinfo *) sk)
+
+struct hci_pinfo {
+	struct bt_sock    bt;
+	struct hci_dev    *hdev;
+	struct hci_filter filter;
+	__u32             cmsg_mask;
+	unsigned short    channel;
+};
+
 static inline int hci_test_bit(int nr, void *addr)
 {
 	return *((__u32 *) addr + (nr >> 5)) & ((__u32) 1 << (nr & 31));
 }
 
 /* Security filter */
-static struct hci_sec_filter hci_sec_filter = {
+#define HCI_SFLT_MAX_OGF  5
+
+struct hci_sec_filter {
+	__u32 type_mask;
+	__u32 event_mask[2];
+	__u32 ocf_mask[HCI_SFLT_MAX_OGF + 1][4];
+};
+
+static const struct hci_sec_filter hci_sec_filter = {
 	/* Packet types */
 	0x10,
 	/* Events */
@@ -197,11 +216,39 @@ void hci_send_to_control(struct sk_buff *skb, struct sock *skip_sk)
 	read_unlock(&hci_sk_list.lock);
 }
 
+static void queue_monitor_skb(struct sk_buff *skb)
+{
+	struct sock *sk;
+
+	BT_DBG("len %d", skb->len);
+
+	read_lock(&hci_sk_list.lock);
+
+	sk_for_each(sk, &hci_sk_list.head) {
+		struct sk_buff *nskb;
+
+		if (sk->sk_state != BT_BOUND)
+			continue;
+
+		if (hci_pi(sk)->channel != HCI_CHANNEL_MONITOR)
+			continue;
+
+		nskb = skb_clone(skb, GFP_ATOMIC);
+		if (!nskb)
+			continue;
+
+		if (sock_queue_rcv_skb(sk, nskb))
+			kfree_skb(nskb);
+	}
+
+	read_unlock(&hci_sk_list.lock);
+}
+
 /* Send frame to monitor socket */
 void hci_send_to_monitor(struct hci_dev *hdev, struct sk_buff *skb)
 {
-	struct sock *sk;
 	struct sk_buff *skb_copy = NULL;
+	struct hci_mon_hdr *hdr;
 	__le16 opcode;
 
 	if (!atomic_read(&monitor_promisc))
@@ -232,72 +279,19 @@ void hci_send_to_monitor(struct hci_dev *hdev, struct sk_buff *skb)
 		return;
 	}
 
-	read_lock(&hci_sk_list.lock);
+	/* Create a private copy with headroom */
+	skb_copy = __pskb_copy_fclone(skb, HCI_MON_HDR_SIZE, GFP_ATOMIC, true);
+	if (!skb_copy)
+		return;
 
-	sk_for_each(sk, &hci_sk_list.head) {
-		struct sk_buff *nskb;
+	/* Put header before the data */
+	hdr = (void *) skb_push(skb_copy, HCI_MON_HDR_SIZE);
+	hdr->opcode = opcode;
+	hdr->index = cpu_to_le16(hdev->id);
+	hdr->len = cpu_to_le16(skb->len);
 
-		if (sk->sk_state != BT_BOUND)
-			continue;
-
-		if (hci_pi(sk)->channel != HCI_CHANNEL_MONITOR)
-			continue;
-
-		if (!skb_copy) {
-			struct hci_mon_hdr *hdr;
-
-			/* Create a private copy with headroom */
-			skb_copy = __pskb_copy_fclone(skb, HCI_MON_HDR_SIZE,
-						      GFP_ATOMIC, true);
-			if (!skb_copy)
-				continue;
-
-			/* Put header before the data */
-			hdr = (void *) skb_push(skb_copy, HCI_MON_HDR_SIZE);
-			hdr->opcode = opcode;
-			hdr->index = cpu_to_le16(hdev->id);
-			hdr->len = cpu_to_le16(skb->len);
-		}
-
-		nskb = skb_clone(skb_copy, GFP_ATOMIC);
-		if (!nskb)
-			continue;
-
-		if (sock_queue_rcv_skb(sk, nskb))
-			kfree_skb(nskb);
-	}
-
-	read_unlock(&hci_sk_list.lock);
-
+	queue_monitor_skb(skb_copy);
 	kfree_skb(skb_copy);
-}
-
-static void send_monitor_event(struct sk_buff *skb)
-{
-	struct sock *sk;
-
-	BT_DBG("len %d", skb->len);
-
-	read_lock(&hci_sk_list.lock);
-
-	sk_for_each(sk, &hci_sk_list.head) {
-		struct sk_buff *nskb;
-
-		if (sk->sk_state != BT_BOUND)
-			continue;
-
-		if (hci_pi(sk)->channel != HCI_CHANNEL_MONITOR)
-			continue;
-
-		nskb = skb_clone(skb, GFP_ATOMIC);
-		if (!nskb)
-			continue;
-
-		if (sock_queue_rcv_skb(sk, nskb))
-			kfree_skb(nskb);
-	}
-
-	read_unlock(&hci_sk_list.lock);
 }
 
 static struct sk_buff *create_monitor_event(struct hci_dev *hdev, int event)
@@ -403,7 +397,7 @@ void hci_sock_dev_event(struct hci_dev *hdev, int event)
 
 		skb = create_monitor_event(hdev, event);
 		if (skb) {
-			send_monitor_event(skb);
+			queue_monitor_skb(skb);
 			kfree_skb(skb);
 		}
 	}
@@ -481,7 +475,7 @@ static int hci_sock_blacklist_add(struct hci_dev *hdev, void __user *arg)
 
 	hci_dev_lock(hdev);
 
-	err = hci_blacklist_add(hdev, &bdaddr, BDADDR_BREDR);
+	err = hci_bdaddr_list_add(&hdev->blacklist, &bdaddr, BDADDR_BREDR);
 
 	hci_dev_unlock(hdev);
 
@@ -498,7 +492,7 @@ static int hci_sock_blacklist_del(struct hci_dev *hdev, void __user *arg)
 
 	hci_dev_lock(hdev);
 
-	err = hci_blacklist_del(hdev, &bdaddr, BDADDR_BREDR);
+	err = hci_bdaddr_list_del(&hdev->blacklist, &bdaddr, BDADDR_BREDR);
 
 	hci_dev_unlock(hdev);
 
@@ -516,6 +510,9 @@ static int hci_sock_bound_ioctl(struct sock *sk, unsigned int cmd,
 
 	if (test_bit(HCI_USER_CHANNEL, &hdev->dev_flags))
 		return -EBUSY;
+
+	if (test_bit(HCI_UNCONFIGURED, &hdev->dev_flags))
+		return -EOPNOTSUPP;
 
 	if (hdev->dev_type != HCI_BREDR)
 		return -EOPNOTSUPP;
@@ -690,7 +687,8 @@ static int hci_sock_bind(struct socket *sock, struct sockaddr *addr,
 
 		if (test_bit(HCI_UP, &hdev->flags) ||
 		    test_bit(HCI_INIT, &hdev->flags) ||
-		    test_bit(HCI_SETUP, &hdev->dev_flags)) {
+		    test_bit(HCI_SETUP, &hdev->dev_flags) ||
+		    test_bit(HCI_CONFIG, &hdev->dev_flags)) {
 			err = -EBUSY;
 			hci_dev_put(hdev);
 			goto done;
@@ -855,7 +853,7 @@ static int hci_sock_recvmsg(struct kiocb *iocb, struct socket *sock,
 	}
 
 	skb_reset_transport_header(skb);
-	err = skb_copy_datagram_iovec(skb, 0, msg->msg_iov, copied);
+	err = skb_copy_datagram_msg(skb, 0, msg, copied);
 
 	switch (hci_pi(sk)->channel) {
 	case HCI_CHANNEL_RAW:
@@ -924,7 +922,7 @@ static int hci_sock_sendmsg(struct kiocb *iocb, struct socket *sock,
 	if (!skb)
 		goto done;
 
-	if (memcpy_fromiovec(skb_put(skb, len), msg->msg_iov, len)) {
+	if (memcpy_from_msg(skb_put(skb, len), msg, len)) {
 		err = -EFAULT;
 		goto drop;
 	}
@@ -960,11 +958,11 @@ static int hci_sock_sendmsg(struct kiocb *iocb, struct socket *sock,
 			goto drop;
 		}
 
-		if (test_bit(HCI_RAW, &hdev->flags) || (ogf == 0x3f)) {
+		if (ogf == 0x3f) {
 			skb_queue_tail(&hdev->raw_q, skb);
 			queue_work(hdev->workqueue, &hdev->tx_work);
 		} else {
-			/* Stand-alone HCI commands must be flaged as
+			/* Stand-alone HCI commands must be flagged as
 			 * single-command requests.
 			 */
 			bt_cb(skb)->req.start = true;
@@ -1206,6 +1204,8 @@ static const struct net_proto_family hci_sock_family_ops = {
 int __init hci_sock_init(void)
 {
 	int err;
+
+	BUILD_BUG_ON(sizeof(struct sockaddr_hci) > sizeof(struct sockaddr));
 
 	err = proto_register(&hci_sk_proto, 0);
 	if (err < 0)

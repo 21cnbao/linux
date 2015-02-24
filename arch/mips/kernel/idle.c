@@ -68,9 +68,6 @@ void r4k_wait_irqoff(void)
 		"	wait			\n"
 		"	.set	pop		\n");
 	local_irq_enable();
-	__asm__(
-	"	.globl __pastwait	\n"
-	"__pastwait:			\n");
 }
 
 /*
@@ -189,6 +186,7 @@ void __init check_wait(void)
 	case CPU_PROAPTIV:
 	case CPU_P5600:
 	case CPU_M5150:
+	case CPU_QEMU_GENERIC:
 		cpu_wait = r4k_wait;
 		if (read_c0_config7() & MIPS_CONF7_WII)
 			cpu_wait = r4k_wait_irqoff;

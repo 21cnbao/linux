@@ -387,7 +387,7 @@ static pteval_t pte_pfn_to_mfn(pteval_t val)
 		unsigned long mfn;
 
 		if (!xen_feature(XENFEAT_auto_translated_physmap))
-			mfn = get_phys_to_machine(pfn);
+			mfn = __pfn_to_mfn(pfn);
 		else
 			mfn = pfn;
 		/*
@@ -399,33 +399,9 @@ static pteval_t pte_pfn_to_mfn(pteval_t val)
 		if (unlikely(mfn == INVALID_P2M_ENTRY)) {
 			mfn = 0;
 			flags = 0;
-		} else {
-			/*
-			 * Paramount to do this test _after_ the
-			 * INVALID_P2M_ENTRY as INVALID_P2M_ENTRY &
-			 * IDENTITY_FRAME_BIT resolves to true.
-			 */
-			mfn &= ~FOREIGN_FRAME_BIT;
-			if (mfn & IDENTITY_FRAME_BIT) {
-				mfn &= ~IDENTITY_FRAME_BIT;
-				flags |= _PAGE_IOMAP;
-			}
-		}
+		} else
+			mfn &= ~(FOREIGN_FRAME_BIT | IDENTITY_FRAME_BIT);
 		val = ((pteval_t)mfn << PAGE_SHIFT) | flags;
-	}
-
-	return val;
-}
-
-static pteval_t iomap_pte(pteval_t val)
-{
-	if (val & _PAGE_PRESENT) {
-		unsigned long pfn = (val & PTE_PFN_MASK) >> PAGE_SHIFT;
-		pteval_t flags = val & PTE_FLAGS_MASK;
-
-		/* We assume the pte frame number is a MFN, so
-		   just use it as-is. */
-		val = ((pteval_t)pfn << PAGE_SHIFT) | flags;
 	}
 
 	return val;
@@ -434,15 +410,6 @@ static pteval_t iomap_pte(pteval_t val)
 __visible pteval_t xen_pte_val(pte_t pte)
 {
 	pteval_t pteval = pte.pte;
-#if 0
-	/* If this is a WC pte, convert back from Xen WC to Linux WC */
-	if ((pteval & (_PAGE_PAT | _PAGE_PCD | _PAGE_PWT)) == _PAGE_PAT) {
-		WARN_ON(!pat_enabled);
-		pteval = (pteval & ~_PAGE_PAT) | _PAGE_PWT;
-	}
-#endif
-	if (xen_initial_domain() && (pteval & _PAGE_IOMAP))
-		return pteval;
 
 	return pte_mfn_to_pfn(pteval);
 }
@@ -454,61 +421,9 @@ __visible pgdval_t xen_pgd_val(pgd_t pgd)
 }
 PV_CALLEE_SAVE_REGS_THUNK(xen_pgd_val);
 
-/*
- * Xen's PAT setup is part of its ABI, though I assume entries 6 & 7
- * are reserved for now, to correspond to the Intel-reserved PAT
- * types.
- *
- * We expect Linux's PAT set as follows:
- *
- * Idx  PTE flags        Linux    Xen    Default
- * 0                     WB       WB     WB
- * 1            PWT      WC       WT     WT
- * 2        PCD          UC-      UC-    UC-
- * 3        PCD PWT      UC       UC     UC
- * 4    PAT              WB       WC     WB
- * 5    PAT     PWT      WC       WP     WT
- * 6    PAT PCD          UC-      rsv    UC-
- * 7    PAT PCD PWT      UC       rsv    UC
- */
-
-void xen_set_pat(u64 pat)
-{
-	/* We expect Linux to use a PAT setting of
-	 * UC UC- WC WB (ignoring the PAT flag) */
-	WARN_ON(pat != 0x0007010600070106ull);
-}
-
 __visible pte_t xen_make_pte(pteval_t pte)
 {
-	phys_addr_t addr = (pte & PTE_PFN_MASK);
-#if 0
-	/* If Linux is trying to set a WC pte, then map to the Xen WC.
-	 * If _PAGE_PAT is set, then it probably means it is really
-	 * _PAGE_PSE, so avoid fiddling with the PAT mapping and hope
-	 * things work out OK...
-	 *
-	 * (We should never see kernel mappings with _PAGE_PSE set,
-	 * but we could see hugetlbfs mappings, I think.).
-	 */
-	if (pat_enabled && !WARN_ON(pte & _PAGE_PAT)) {
-		if ((pte & (_PAGE_PCD | _PAGE_PWT)) == _PAGE_PWT)
-			pte = (pte & ~(_PAGE_PCD | _PAGE_PWT)) | _PAGE_PAT;
-	}
-#endif
-	/*
-	 * Unprivileged domains are allowed to do IOMAPpings for
-	 * PCI passthrough, but not map ISA space.  The ISA
-	 * mappings are just dummy local mappings to keep other
-	 * parts of the kernel happy.
-	 */
-	if (unlikely(pte & _PAGE_IOMAP) &&
-	    (xen_initial_domain() || addr >= ISA_END_ADDRESS)) {
-		pte = iomap_pte(pte);
-	} else {
-		pte &= ~_PAGE_IOMAP;
-		pte = pte_pfn_to_mfn(pte);
-	}
+	pte = pte_pfn_to_mfn(pte);
 
 	return native_make_pte(pte);
 }
@@ -1198,20 +1113,16 @@ static void __init xen_cleanhighmap(unsigned long vaddr,
 	 * instead of somewhere later and be confusing. */
 	xen_mc_flush();
 }
-static void __init xen_pagetable_p2m_copy(void)
+
+static void __init xen_pagetable_p2m_free(void)
 {
 	unsigned long size;
 	unsigned long addr;
-	unsigned long new_mfn_list;
-
-	if (xen_feature(XENFEAT_auto_translated_physmap))
-		return;
 
 	size = PAGE_ALIGN(xen_start_info->nr_pages * sizeof(unsigned long));
 
-	new_mfn_list = xen_revector_p2m_tree();
 	/* No memory or already called. */
-	if (!new_mfn_list || new_mfn_list == xen_start_info->mfn_list)
+	if ((unsigned long)xen_p2m_addr == xen_start_info->mfn_list)
 		return;
 
 	/* using __ka address and sticking INVALID_P2M_ENTRY! */
@@ -1229,8 +1140,6 @@ static void __init xen_pagetable_p2m_copy(void)
 
 	size = PAGE_ALIGN(xen_start_info->nr_pages * sizeof(unsigned long));
 	memblock_free(__pa(xen_start_info->mfn_list), size);
-	/* And revector! Bye bye old array */
-	xen_start_info->mfn_list = new_mfn_list;
 
 	/* At this stage, cleanup_highmap has already cleaned __ka space
 	 * from _brk_limit way up to the max_pfn_mapped (which is the end of
@@ -1254,14 +1163,35 @@ static void __init xen_pagetable_p2m_copy(void)
 }
 #endif
 
+static void __init xen_pagetable_p2m_setup(void)
+{
+	if (xen_feature(XENFEAT_auto_translated_physmap))
+		return;
+
+	xen_vmalloc_p2m_tree();
+
+#ifdef CONFIG_X86_64
+	xen_pagetable_p2m_free();
+#endif
+	/* And revector! Bye bye old array */
+	xen_start_info->mfn_list = (unsigned long)xen_p2m_addr;
+}
+
 static void __init xen_pagetable_init(void)
 {
 	paging_init();
-	xen_setup_shared_info();
-#ifdef CONFIG_X86_64
-	xen_pagetable_p2m_copy();
-#endif
 	xen_post_allocator_init();
+
+	xen_pagetable_p2m_setup();
+
+	/* Allocate and initialize top and mid mfn levels for p2m structure */
+	xen_build_mfn_list_list();
+
+	/* Remap memory freed due to conflicts with E820 map */
+	if (!xen_feature(XENFEAT_auto_translated_physmap))
+		xen_remap_memory();
+
+	xen_setup_shared_info();
 }
 static void xen_write_cr2(unsigned long cr2)
 {
@@ -1494,8 +1424,10 @@ static int xen_pgd_alloc(struct mm_struct *mm)
 		page->private = (unsigned long)user_pgd;
 
 		if (user_pgd != NULL) {
+#ifdef CONFIG_X86_VSYSCALL_EMULATION
 			user_pgd[pgd_index(VSYSCALL_ADDR)] =
 				__pgd(__pa(level3_user_vsyscall) | _PAGE_TABLE);
+#endif
 			ret = 0;
 		}
 
@@ -1557,7 +1489,7 @@ static void __init xen_set_pte_init(pte_t *ptep, pte_t pte)
 	native_set_pte(ptep, pte);
 }
 
-static void pin_pagetable_pfn(unsigned cmd, unsigned long pfn)
+static void __init pin_pagetable_pfn(unsigned cmd, unsigned long pfn)
 {
 	struct mmuext_op op;
 	op.cmd = cmd;
@@ -1725,7 +1657,7 @@ void __init xen_reserve_top(void)
  * Like __va(), but returns address in the kernel mapping (which is
  * all we have until the physical memory mapping has been set up.
  */
-static void *__ka(phys_addr_t paddr)
+static void * __init __ka(phys_addr_t paddr)
 {
 #ifdef CONFIG_X86_64
 	return (void *)(paddr + __START_KERNEL_map);
@@ -1735,7 +1667,7 @@ static void *__ka(phys_addr_t paddr)
 }
 
 /* Convert a machine address to physical address */
-static unsigned long m2p(phys_addr_t maddr)
+static unsigned long __init m2p(phys_addr_t maddr)
 {
 	phys_addr_t paddr;
 
@@ -1746,13 +1678,14 @@ static unsigned long m2p(phys_addr_t maddr)
 }
 
 /* Convert a machine address to kernel virtual */
-static void *m2v(phys_addr_t maddr)
+static void * __init m2v(phys_addr_t maddr)
 {
 	return __ka(m2p(maddr));
 }
 
 /* Set the page permissions on an identity-mapped pages */
-static void set_page_prot_flags(void *addr, pgprot_t prot, unsigned long flags)
+static void __init set_page_prot_flags(void *addr, pgprot_t prot,
+				       unsigned long flags)
 {
 	unsigned long pfn = __pa(addr) >> PAGE_SHIFT;
 	pte_t pte = pfn_pte(pfn, prot);
@@ -1764,7 +1697,7 @@ static void set_page_prot_flags(void *addr, pgprot_t prot, unsigned long flags)
 	if (HYPERVISOR_update_va_mapping((unsigned long)addr, pte, flags))
 		BUG();
 }
-static void set_page_prot(void *addr, pgprot_t prot)
+static void __init set_page_prot(void *addr, pgprot_t prot)
 {
 	return set_page_prot_flags(addr, prot, UVMF_NONE);
 }
@@ -1801,10 +1734,8 @@ static void __init xen_map_identity_early(pmd_t *pmd, unsigned long max_pfn)
 		for (pteidx = 0; pteidx < PTRS_PER_PTE; pteidx++, pfn++) {
 			pte_t pte;
 
-#ifdef CONFIG_X86_32
 			if (pfn > max_pfn_mapped)
 				max_pfn_mapped = pfn;
-#endif
 
 			if (!pte_none(pte_page[pteidx]))
 				continue;
@@ -1837,7 +1768,7 @@ void __init xen_setup_machphys_mapping(void)
 }
 
 #ifdef CONFIG_X86_64
-static void convert_pfn_mfn(void *v)
+static void __init convert_pfn_mfn(void *v)
 {
 	pte_t *pte = v;
 	int i;
@@ -1866,12 +1797,11 @@ static void __init check_pt_base(unsigned long *pt_base, unsigned long *pt_end,
  *
  * We can construct this by grafting the Xen provided pagetable into
  * head_64.S's preconstructed pagetables.  We copy the Xen L2's into
- * level2_ident_pgt, level2_kernel_pgt and level2_fixmap_pgt.  This
- * means that only the kernel has a physical mapping to start with -
- * but that's enough to get __va working.  We need to fill in the rest
- * of the physical mapping once some sort of allocator has been set
- * up.
- * NOTE: for PVH, the page tables are native.
+ * level2_ident_pgt, and level2_kernel_pgt.  This means that only the
+ * kernel has a physical mapping to start with - but that's enough to
+ * get __va working.  We need to fill in the rest of the physical
+ * mapping once some sort of allocator has been set up.  NOTE: for
+ * PVH, the page tables are native.
  */
 void __init xen_setup_kernel_pagetable(pgd_t *pgd, unsigned long max_pfn)
 {
@@ -1902,8 +1832,11 @@ void __init xen_setup_kernel_pagetable(pgd_t *pgd, unsigned long max_pfn)
 		/* L3_i[0] -> level2_ident_pgt */
 		convert_pfn_mfn(level3_ident_pgt);
 		/* L3_k[510] -> level2_kernel_pgt
-		 * L3_i[511] -> level2_fixmap_pgt */
+		 * L3_k[511] -> level2_fixmap_pgt */
 		convert_pfn_mfn(level3_kernel_pgt);
+
+		/* L3_k[511][506] -> level1_fixmap_pgt */
+		convert_pfn_mfn(level2_fixmap_pgt);
 	}
 	/* We get [511][511] and have Xen's version of level2_kernel_pgt */
 	l3 = m2v(pgd[pgd_index(__START_KERNEL_map)].pgd);
@@ -1913,21 +1846,15 @@ void __init xen_setup_kernel_pagetable(pgd_t *pgd, unsigned long max_pfn)
 	addr[1] = (unsigned long)l3;
 	addr[2] = (unsigned long)l2;
 	/* Graft it onto L4[272][0]. Note that we creating an aliasing problem:
-	 * Both L4[272][0] and L4[511][511] have entries that point to the same
+	 * Both L4[272][0] and L4[511][510] have entries that point to the same
 	 * L2 (PMD) tables. Meaning that if you modify it in __va space
 	 * it will be also modified in the __ka space! (But if you just
 	 * modify the PMD table to point to other PTE's or none, then you
 	 * are OK - which is what cleanup_highmap does) */
 	copy_page(level2_ident_pgt, l2);
-	/* Graft it onto L4[511][511] */
+	/* Graft it onto L4[511][510] */
 	copy_page(level2_kernel_pgt, l2);
 
-	/* Get [511][510] and graft that in level2_fixmap_pgt */
-	l3 = m2v(pgd[pgd_index(__START_KERNEL_map + PMD_SIZE)].pgd);
-	l2 = m2v(l3[pud_index(__START_KERNEL_map + PMD_SIZE)].pud);
-	copy_page(level2_fixmap_pgt, l2);
-	/* Note that we don't do anything with level1_fixmap_pgt which
-	 * we don't need. */
 	if (!xen_feature(XENFEAT_auto_translated_physmap)) {
 		/* Make pagetable pieces RO */
 		set_page_prot(init_level4_pgt, PAGE_KERNEL_RO);
@@ -1937,6 +1864,7 @@ void __init xen_setup_kernel_pagetable(pgd_t *pgd, unsigned long max_pfn)
 		set_page_prot(level2_ident_pgt, PAGE_KERNEL_RO);
 		set_page_prot(level2_kernel_pgt, PAGE_KERNEL_RO);
 		set_page_prot(level2_fixmap_pgt, PAGE_KERNEL_RO);
+		set_page_prot(level1_fixmap_pgt, PAGE_KERNEL_RO);
 
 		/* Pin down new L4 */
 		pin_pagetable_pfn(MMUEXT_PIN_L4_TABLE,
@@ -2061,7 +1989,7 @@ static void xen_set_fixmap(unsigned idx, phys_addr_t phys, pgprot_t prot)
 # ifdef CONFIG_HIGHMEM
 	case FIX_KMAP_BEGIN ... FIX_KMAP_END:
 # endif
-#else
+#elif defined(CONFIG_X86_VSYSCALL_EMULATION)
 	case VSYSCALL_PAGE:
 #endif
 	case FIX_TEXT_POKE0:
@@ -2094,13 +2022,13 @@ static void xen_set_fixmap(unsigned idx, phys_addr_t phys, pgprot_t prot)
 
 	default:
 		/* By default, set_fixmap is used for hardware mappings */
-		pte = mfn_pte(phys, __pgprot(pgprot_val(prot) | _PAGE_IOMAP));
+		pte = mfn_pte(phys, prot);
 		break;
 	}
 
 	__native_set_fixmap(idx, pte);
 
-#ifdef CONFIG_X86_64
+#ifdef CONFIG_X86_VSYSCALL_EMULATION
 	/* Replicate changes to map the vsyscall page into the user
 	   pagetable vsyscall mapping. */
 	if (idx == VSYSCALL_PAGE) {

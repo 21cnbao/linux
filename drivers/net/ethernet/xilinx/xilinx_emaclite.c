@@ -695,7 +695,7 @@ static irqreturn_t xemaclite_interrupt(int irq, void *dev_id)
 
 static int xemaclite_mdio_wait(struct net_local *lp)
 {
-	long end = jiffies + 2;
+	unsigned long end = jiffies + 2;
 
 	/* wait for the MDIO interface to not be busy or timeout
 	   after some time.
@@ -1109,6 +1109,7 @@ static int xemaclite_of_probe(struct platform_device *ofdev)
 	res = platform_get_resource(ofdev, IORESOURCE_IRQ, 0);
 	if (!res) {
 		dev_err(dev, "no IRQ found\n");
+		rc = -ENXIO;
 		goto error;
 	}
 
@@ -1200,8 +1201,7 @@ static int xemaclite_of_remove(struct platform_device *of_dev)
 
 	unregister_netdev(ndev);
 
-	if (lp->phy_node)
-		of_node_put(lp->phy_node);
+	of_node_put(lp->phy_node);
 	lp->phy_node = NULL;
 
 	xemaclite_remove_ndev(ndev);
@@ -1245,7 +1245,6 @@ MODULE_DEVICE_TABLE(of, xemaclite_of_match);
 static struct platform_driver xemaclite_of_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = xemaclite_of_match,
 	},
 	.probe		= xemaclite_of_probe,

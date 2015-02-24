@@ -20,7 +20,6 @@
 #include <linux/pci.h>
 #include <linux/string.h>
 #include <linux/init.h>
-#include <linux/bootmem.h>
 #include <linux/delay.h>
 #include <linux/export.h>
 #include <linux/of_address.h>
@@ -123,21 +122,12 @@ resource_size_t pcibios_window_alignment(struct pci_bus *bus,
 
 void pcibios_reset_secondary_bus(struct pci_dev *dev)
 {
-	u16 ctrl;
-
 	if (ppc_md.pcibios_reset_secondary_bus) {
 		ppc_md.pcibios_reset_secondary_bus(dev);
 		return;
 	}
 
-	pci_read_config_word(dev, PCI_BRIDGE_CONTROL, &ctrl);
-	ctrl |= PCI_BRIDGE_CTL_BUS_RESET;
-	pci_write_config_word(dev, PCI_BRIDGE_CONTROL, ctrl);
-	msleep(2);
-
-	ctrl &= ~PCI_BRIDGE_CTL_BUS_RESET;
-	pci_write_config_word(dev, PCI_BRIDGE_CONTROL, ctrl);
-	ssleep(1);
+	pci_reset_secondary_bus(dev);
 }
 
 static resource_size_t pcibios_io_size(const struct pci_controller *hose)
@@ -756,7 +746,11 @@ void pci_process_bridge_OF_ranges(struct pci_controller *hose,
 			break;
 		}
 		if (res != NULL) {
-			of_pci_range_to_resource(&range, dev, res);
+			res->name = dev->full_name;
+			res->flags = range.flags;
+			res->start = range.cpu_addr;
+			res->end = range.cpu_addr + range.size - 1;
+			res->parent = res->child = res->sibling = NULL;
 		}
 	}
 }
@@ -1149,7 +1143,7 @@ static int reparent_resources(struct resource *parent,
  *	    as well.
  */
 
-void pcibios_allocate_bus_resources(struct pci_bus *bus)
+static void pcibios_allocate_bus_resources(struct pci_bus *bus)
 {
 	struct pci_bus *b;
 	int i;
@@ -1190,6 +1184,8 @@ void pcibios_allocate_bus_resources(struct pci_bus *bus)
 			 pr, (pr && pr->name) ? pr->name : "nil");
 
 		if (pr && !(pr->flags & IORESOURCE_UNSET)) {
+			struct pci_dev *dev = bus->self;
+
 			if (request_resource(pr, res) == 0)
 				continue;
 			/*
@@ -1198,6 +1194,11 @@ void pcibios_allocate_bus_resources(struct pci_bus *bus)
 			 * bridge resource and try again.
 			 */
 			if (reparent_resources(pr, res) == 0)
+				continue;
+
+			if (dev && i < PCI_BRIDGE_RESOURCE_NUM &&
+			    pci_claim_bridge_resource(dev,
+						i + PCI_BRIDGE_RESOURCES) == 0)
 				continue;
 		}
 		pr_warning("PCI: Cannot allocate resource region "
@@ -1407,7 +1408,10 @@ void pcibios_claim_one_bus(struct pci_bus *bus)
 				 (unsigned long long)r->end,
 				 (unsigned int)r->flags);
 
-			pci_claim_resource(dev, i);
+			if (pci_claim_resource(dev, i) == 0)
+				continue;
+
+			pci_claim_bridge_resource(dev, i);
 		}
 	}
 
@@ -1469,7 +1473,7 @@ static void pcibios_setup_phb_resources(struct pci_controller *hose,
 	res = &hose->io_resource;
 
 	if (!res->flags) {
-		printk(KERN_WARNING "PCI: I/O resource not set for host"
+		pr_info("PCI: I/O resource not set for host"
 		       " bridge %s (domain %d)\n",
 		       hose->dn->full_name, hose->global_number);
 	} else {
@@ -1570,7 +1574,6 @@ EARLY_PCI_OP(write, byte, u8)
 EARLY_PCI_OP(write, word, u16)
 EARLY_PCI_OP(write, dword, u32)
 
-extern int pci_bus_find_capability (struct pci_bus *bus, unsigned int devfn, int cap);
 int early_find_capability(struct pci_controller *hose, int bus, int devfn,
 			  int cap)
 {
