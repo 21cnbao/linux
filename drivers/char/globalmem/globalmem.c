@@ -15,7 +15,7 @@
 
 #define GLOBALMEM_SIZE	0x1000
 #define MEM_CLEAR 0x1
-#define GLOBALMEM_MAJOR 250
+#define GLOBALMEM_MAJOR 230
 
 static int globalmem_major = GLOBALMEM_MAJOR;
 module_param(globalmem_major, int, S_IRUGO);
@@ -78,7 +78,7 @@ static ssize_t globalmem_read(struct file *filp, char __user * buf, size_t size,
 	} else {
 		*ppos += count;
 		ret = count;
-		*(unsigned int *)0 = 1; /* a kernel panic */
+
 		printk(KERN_INFO "read %u bytes(s) from %lu\n", count, p);
 	}
 	mutex_unlock(&dev->mutex);

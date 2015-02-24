@@ -16,7 +16,7 @@
 
 #define GLOBALFIFO_SIZE	0x1000
 #define FIFO_CLEAR 0x1
-#define GLOBALFIFO_MAJOR 249
+#define GLOBALFIFO_MAJOR 231
 
 static int globalfifo_major = GLOBALFIFO_MAJOR;
 module_param(globalfifo_major, int, S_IRUGO);
