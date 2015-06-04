@@ -611,6 +611,7 @@ config TILE_SROM
 
 source "drivers/char/xillybus/Kconfig"
 source "drivers/char/globalmem/Kconfig"
+source "drivers/char/globalfifo/Kconfig"
 
 endmenu
 
