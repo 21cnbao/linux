@@ -67,6 +67,7 @@ static int ip_forward_finish(struct sk_buff *skb)
 	if (unlikely(opt->optlen))
 		ip_forward_options(skb);
 
+	skb_sender_cpu_clear(skb);
 	return dst_output(skb);
 }
 
@@ -79,6 +80,9 @@ int ip_forward(struct sk_buff *skb)
 
 	/* that should never happen */
 	if (skb->pkt_type != PACKET_HOST)
+		goto drop;
+
+	if (unlikely(skb->sk))
 		goto drop;
 
 	if (skb_warn_if_lro(skb))

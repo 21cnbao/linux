@@ -1350,7 +1350,6 @@ static unsigned long clk_core_get_rate(struct clk_core *clk)
 
 	return rate;
 }
-EXPORT_SYMBOL_GPL(clk_core_get_rate);
 
 /**
  * clk_get_rate - return the rate of clk
@@ -1444,8 +1443,10 @@ static struct clk_core *__clk_set_parent_before(struct clk_core *clk,
 	 */
 	if (clk->prepare_count) {
 		clk_core_prepare(parent);
+		flags = clk_enable_lock();
 		clk_core_enable(parent);
 		clk_core_enable(clk);
+		clk_enable_unlock(flags);
 	}
 
 	/* update the clk tree topology */
@@ -1460,13 +1461,17 @@ static void __clk_set_parent_after(struct clk_core *core,
 				   struct clk_core *parent,
 				   struct clk_core *old_parent)
 {
+	unsigned long flags;
+
 	/*
 	 * Finish the migration of prepare state and undo the changes done
 	 * for preventing a race with clk_enable().
 	 */
 	if (core->prepare_count) {
+		flags = clk_enable_lock();
 		clk_core_disable(core);
 		clk_core_disable(old_parent);
+		clk_enable_unlock(flags);
 		clk_core_unprepare(old_parent);
 	}
 }
@@ -1490,8 +1495,10 @@ static int __clk_set_parent(struct clk_core *clk, struct clk_core *parent,
 		clk_enable_unlock(flags);
 
 		if (clk->prepare_count) {
+			flags = clk_enable_lock();
 			clk_core_disable(clk);
 			clk_core_disable(parent);
+			clk_enable_unlock(flags);
 			clk_core_unprepare(parent);
 		}
 		return ret;
@@ -2169,6 +2176,32 @@ int clk_get_phase(struct clk *clk)
 
 	return clk_core_get_phase(clk->core);
 }
+
+/**
+ * clk_is_match - check if two clk's point to the same hardware clock
+ * @p: clk compared against q
+ * @q: clk compared against p
+ *
+ * Returns true if the two struct clk pointers both point to the same hardware
+ * clock node. Put differently, returns true if struct clk *p and struct clk *q
+ * share the same struct clk_core object.
+ *
+ * Returns false otherwise. Note that two NULL clks are treated as matching.
+ */
+bool clk_is_match(const struct clk *p, const struct clk *q)
+{
+	/* trivial case: identical struct clk's or both NULL */
+	if (p == q)
+		return true;
+
+	/* true if clk->core pointers match. Avoid derefing garbage */
+	if (!IS_ERR_OR_NULL(p) && !IS_ERR_OR_NULL(q))
+		if (p->core == q->core)
+			return true;
+
+	return false;
+}
+EXPORT_SYMBOL_GPL(clk_is_match);
 
 /**
  * __clk_init - initialize the data structures in a struct clk

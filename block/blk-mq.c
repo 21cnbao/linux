@@ -675,8 +675,11 @@ static void blk_mq_rq_timer(unsigned long priv)
 		data.next = blk_rq_timeout(round_jiffies_up(data.next));
 		mod_timer(&q->timeout, data.next);
 	} else {
-		queue_for_each_hw_ctx(q, hctx, i)
-			blk_mq_tag_idle(hctx);
+		queue_for_each_hw_ctx(q, hctx, i) {
+			/* the hctx may be unmapped, so check it here */
+			if (blk_mq_hw_queue_mapped(hctx))
+				blk_mq_tag_idle(hctx);
+		}
 	}
 }
 
@@ -1457,7 +1460,7 @@ static struct blk_mq_tags *blk_mq_init_rq_map(struct blk_mq_tag_set *set,
 
 		do {
 			page = alloc_pages_node(set->numa_node,
-				GFP_KERNEL | __GFP_NOWARN | __GFP_NORETRY,
+				GFP_KERNEL | __GFP_NOWARN | __GFP_NORETRY | __GFP_ZERO,
 				this_order);
 			if (page)
 				break;
@@ -1479,8 +1482,6 @@ static struct blk_mq_tags *blk_mq_init_rq_map(struct blk_mq_tag_set *set,
 		left -= to_do * rq_size;
 		for (j = 0; j < to_do; j++) {
 			tags->rqs[i] = p;
-			tags->rqs[i]->atomic_flags = 0;
-			tags->rqs[i]->cmd_flags = 0;
 			if (set->ops->init_request) {
 				if (set->ops->init_request(set->driver_data,
 						tags->rqs[i], hctx_idx, i,
@@ -1572,22 +1573,6 @@ static int blk_mq_hctx_cpu_offline(struct blk_mq_hw_ctx *hctx, int cpu)
 	return NOTIFY_OK;
 }
 
-static int blk_mq_hctx_cpu_online(struct blk_mq_hw_ctx *hctx, int cpu)
-{
-	struct request_queue *q = hctx->queue;
-	struct blk_mq_tag_set *set = q->tag_set;
-
-	if (set->tags[hctx->queue_num])
-		return NOTIFY_OK;
-
-	set->tags[hctx->queue_num] = blk_mq_init_rq_map(set, hctx->queue_num);
-	if (!set->tags[hctx->queue_num])
-		return NOTIFY_STOP;
-
-	hctx->tags = set->tags[hctx->queue_num];
-	return NOTIFY_OK;
-}
-
 static int blk_mq_hctx_notify(void *data, unsigned long action,
 			      unsigned int cpu)
 {
@@ -1595,8 +1580,11 @@ static int blk_mq_hctx_notify(void *data, unsigned long action,
 
 	if (action == CPU_DEAD || action == CPU_DEAD_FROZEN)
 		return blk_mq_hctx_cpu_offline(hctx, cpu);
-	else if (action == CPU_ONLINE || action == CPU_ONLINE_FROZEN)
-		return blk_mq_hctx_cpu_online(hctx, cpu);
+
+	/*
+	 * In case of CPU online, tags may be reallocated
+	 * in blk_mq_map_swqueue() after mapping is updated.
+	 */
 
 	return NOTIFY_OK;
 }
@@ -1778,6 +1766,7 @@ static void blk_mq_map_swqueue(struct request_queue *q)
 	unsigned int i;
 	struct blk_mq_hw_ctx *hctx;
 	struct blk_mq_ctx *ctx;
+	struct blk_mq_tag_set *set = q->tag_set;
 
 	queue_for_each_hw_ctx(q, hctx, i) {
 		cpumask_clear(hctx->cpumask);
@@ -1804,15 +1793,19 @@ static void blk_mq_map_swqueue(struct request_queue *q)
 		 * disable it and free the request entries.
 		 */
 		if (!hctx->nr_ctx) {
-			struct blk_mq_tag_set *set = q->tag_set;
-
 			if (set->tags[i]) {
 				blk_mq_free_rq_map(set, set->tags[i], i);
 				set->tags[i] = NULL;
-				hctx->tags = NULL;
 			}
+			hctx->tags = NULL;
 			continue;
 		}
+
+		/* unmapped hw queue can be remapped after CPU topo changed */
+		if (!set->tags[i])
+			set->tags[i] = blk_mq_init_rq_map(set, i);
+		hctx->tags = set->tags[i];
+		WARN_ON(!hctx->tags);
 
 		/*
 		 * Initialize batch roundrobin counts
@@ -1938,7 +1931,7 @@ struct request_queue *blk_mq_init_queue(struct blk_mq_tag_set *set)
 	 */
 	if (percpu_ref_init(&q->mq_usage_counter, blk_mq_usage_counter_release,
 			    PERCPU_REF_INIT_ATOMIC, GFP_KERNEL))
-		goto err_map;
+		goto err_mq_usage;
 
 	setup_timer(&q->timeout, blk_mq_rq_timer, (unsigned long) q);
 	blk_queue_rq_timeout(q, 30000);
@@ -1981,7 +1974,7 @@ struct request_queue *blk_mq_init_queue(struct blk_mq_tag_set *set)
 	blk_mq_init_cpu_queues(q, set->nr_hw_queues);
 
 	if (blk_mq_init_hw_queues(q, set))
-		goto err_hw;
+		goto err_mq_usage;
 
 	mutex_lock(&all_q_mutex);
 	list_add_tail(&q->all_q_node, &all_q_list);
@@ -1993,7 +1986,7 @@ struct request_queue *blk_mq_init_queue(struct blk_mq_tag_set *set)
 
 	return q;
 
-err_hw:
+err_mq_usage:
 	blk_cleanup_queue(q);
 err_hctxs:
 	kfree(map);
@@ -2077,8 +2070,15 @@ static int blk_mq_queue_reinit_notify(struct notifier_block *nb,
 	 */
 	list_for_each_entry(q, &all_q_list, all_q_node)
 		blk_mq_freeze_queue_start(q);
-	list_for_each_entry(q, &all_q_list, all_q_node)
+	list_for_each_entry(q, &all_q_list, all_q_node) {
 		blk_mq_freeze_queue_wait(q);
+
+		/*
+		 * timeout handler can't touch hw queue during the
+		 * reinitialization
+		 */
+		del_timer_sync(&q->timeout);
+	}
 
 	list_for_each_entry(q, &all_q_list, all_q_node)
 		blk_mq_queue_reinit(q);

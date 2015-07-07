@@ -1030,6 +1030,8 @@ nfsd4_fallocate(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
 		dprintk("NFSD: nfsd4_fallocate: couldn't process stateid!\n");
 		return status;
 	}
+	if (!file)
+		return nfserr_bad_stateid;
 
 	status = nfsd4_vfs_fallocate(rqstp, &cstate->current_fh, file,
 				     fallocate->falloc_offset,
@@ -1069,6 +1071,8 @@ nfsd4_seek(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
 		dprintk("NFSD: nfsd4_seek: couldn't process stateid!\n");
 		return status;
 	}
+	if (!file)
+		return nfserr_bad_stateid;
 
 	switch (seek->seek_whence) {
 	case NFS4_CONTENT_DATA:
@@ -1237,8 +1241,8 @@ nfsd4_getdeviceinfo(struct svc_rqst *rqstp,
 		nfserr = ops->proc_getdeviceinfo(exp->ex_path.mnt->mnt_sb, gdp);
 
 	gdp->gd_notify_types &= ops->notify_types;
-	exp_put(exp);
 out:
+	exp_put(exp);
 	return nfserr;
 }
 

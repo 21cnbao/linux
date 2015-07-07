@@ -1616,13 +1616,11 @@ static struct sk_buff *netlink_alloc_large_skb(unsigned int size,
 	if (data == NULL)
 		return NULL;
 
-	skb = build_skb(data, size);
+	skb = __build_skb(data, size);
 	if (skb == NULL)
 		vfree(data);
-	else {
-		skb->head_frag = 0;
+	else
 		skb->destructor = netlink_skb_destructor;
-	}
 
 	return skb;
 }
@@ -3126,8 +3124,6 @@ static int __init netlink_proto_init(void)
 		.key_len = sizeof(u32), /* portid */
 		.hashfn = jhash,
 		.max_shift = 16, /* 64K */
-		.grow_decision = rht_grow_above_75,
-		.shrink_decision = rht_shrink_below_30,
 	};
 
 	if (err != 0)

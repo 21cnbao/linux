@@ -224,14 +224,7 @@
 #define RESUME_TERMINATE		(1 << 0)
 
 #define TTBCR2_SEP_SHIFT		15
-#define TTBCR2_SEP_MASK			0x7
-
-#define TTBCR2_ADDR_32			0
-#define TTBCR2_ADDR_36			1
-#define TTBCR2_ADDR_40			2
-#define TTBCR2_ADDR_42			3
-#define TTBCR2_ADDR_44			4
-#define TTBCR2_ADDR_48			5
+#define TTBCR2_SEP_UPSTREAM		(0x7 << TTBCR2_SEP_SHIFT)
 
 #define TTBRn_HI_ASID_SHIFT            16
 
@@ -783,26 +776,7 @@ static void arm_smmu_init_context_bank(struct arm_smmu_domain *smmu_domain,
 		writel_relaxed(reg, cb_base + ARM_SMMU_CB_TTBCR);
 		if (smmu->version > ARM_SMMU_V1) {
 			reg = pgtbl_cfg->arm_lpae_s1_cfg.tcr >> 32;
-			switch (smmu->va_size) {
-			case 32:
-				reg |= (TTBCR2_ADDR_32 << TTBCR2_SEP_SHIFT);
-				break;
-			case 36:
-				reg |= (TTBCR2_ADDR_36 << TTBCR2_SEP_SHIFT);
-				break;
-			case 40:
-				reg |= (TTBCR2_ADDR_40 << TTBCR2_SEP_SHIFT);
-				break;
-			case 42:
-				reg |= (TTBCR2_ADDR_42 << TTBCR2_SEP_SHIFT);
-				break;
-			case 44:
-				reg |= (TTBCR2_ADDR_44 << TTBCR2_SEP_SHIFT);
-				break;
-			case 48:
-				reg |= (TTBCR2_ADDR_48 << TTBCR2_SEP_SHIFT);
-				break;
-			}
+			reg |= TTBCR2_SEP_UPSTREAM;
 			writel_relaxed(reg, cb_base + ARM_SMMU_CB_TTBCR2);
 		}
 	} else {
@@ -1288,10 +1262,13 @@ static phys_addr_t arm_smmu_iova_to_phys(struct iommu_domain *domain,
 		return 0;
 
 	spin_lock_irqsave(&smmu_domain->pgtbl_lock, flags);
-	if (smmu_domain->smmu->features & ARM_SMMU_FEAT_TRANS_OPS)
+	if (smmu_domain->smmu->features & ARM_SMMU_FEAT_TRANS_OPS &&
+			smmu_domain->stage == ARM_SMMU_DOMAIN_S1) {
 		ret = arm_smmu_iova_to_phys_hard(domain, iova);
-	else
+	} else {
 		ret = ops->iova_to_phys(ops, iova);
+	}
+
 	spin_unlock_irqrestore(&smmu_domain->pgtbl_lock, flags);
 
 	return ret;
@@ -1556,7 +1533,7 @@ static int arm_smmu_device_cfg_probe(struct arm_smmu_device *smmu)
 		return -ENODEV;
 	}
 
-	if (smmu->version == 1 || (!(id & ID0_ATOSNS) && (id & ID0_S1TS))) {
+	if ((id & ID0_S1TS) && ((smmu->version == 1) || (id & ID0_ATOSNS))) {
 		smmu->features |= ARM_SMMU_FEAT_TRANS_OPS;
 		dev_notice(smmu->dev, "\taddress translation ops\n");
 	}

@@ -133,10 +133,6 @@ static int of_platform_serial_setup(struct platform_device *ofdev,
 	if (of_find_property(np, "no-loopback-test", NULL))
 		port->flags |= UPF_SKIP_TEST;
 
-	ret = of_alias_get_id(np, "serial");
-	if (ret >= 0)
-		port->line = ret;
-
 	port->dev = &ofdev->dev;
 
 	switch (type) {
@@ -348,7 +344,6 @@ static struct of_device_id of_platform_serial_table[] = {
 	{ .compatible = "ibm,qpace-nwp-serial",
 		.data = (void *)PORT_NWPSERIAL, },
 #endif
-	{ .type = "serial",         .data = (void *)PORT_UNKNOWN, },
 	{ /* end of list */ },
 };
 

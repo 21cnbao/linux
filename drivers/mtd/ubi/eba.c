@@ -425,9 +425,10 @@ retry:
 					ubi_warn(ubi, "corrupted VID header at PEB %d, LEB %d:%d",
 						 pnum, vol_id, lnum);
 					err = -EBADMSG;
-				} else
+				} else {
 					err = -EINVAL;
 					ubi_ro_mode(ubi);
+				}
 			}
 			goto out_free;
 		} else if (err == UBI_IO_BITFLIPS)
@@ -1418,7 +1419,8 @@ int ubi_eba_init(struct ubi_device *ubi, struct ubi_attach_info *ai)
 				 * during re-size.
 				 */
 				ubi_move_aeb_to_list(av, aeb, &ai->erase);
-			vol->eba_tbl[aeb->lnum] = aeb->pnum;
+			else
+				vol->eba_tbl[aeb->lnum] = aeb->pnum;
 		}
 	}
 

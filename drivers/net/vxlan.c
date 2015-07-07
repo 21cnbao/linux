@@ -1218,7 +1218,7 @@ static int vxlan_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 			goto drop;
 
 		flags &= ~VXLAN_HF_RCO;
-		vni &= VXLAN_VID_MASK;
+		vni &= VXLAN_VNI_MASK;
 	}
 
 	/* For backwards compatibility, only allow reserved fields to be
@@ -1239,7 +1239,7 @@ static int vxlan_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 		flags &= ~VXLAN_GBP_USED_BITS;
 	}
 
-	if (flags || (vni & ~VXLAN_VID_MASK)) {
+	if (flags || vni & ~VXLAN_VNI_MASK) {
 		/* If there are any unprocessed flags remaining treat
 		 * this as a malformed packet. This behavior diverges from
 		 * VXLAN RFC (RFC7348) which stipulates that bits in reserved
@@ -1713,12 +1713,6 @@ static int vxlan6_xmit_skb(struct dst_entry *dst, struct sk_buff *skb,
 		}
 	}
 
-	skb = iptunnel_handle_offloads(skb, udp_sum, type);
-	if (IS_ERR(skb)) {
-		err = -EINVAL;
-		goto err;
-	}
-
 	skb_scrub_packet(skb, xnet);
 
 	min_headroom = LL_RESERVED_SPACE(dst->dev) + dst->header_len
@@ -1735,6 +1729,12 @@ static int vxlan6_xmit_skb(struct dst_entry *dst, struct sk_buff *skb,
 	skb = vlan_hwaccel_push_inside(skb);
 	if (WARN_ON(!skb)) {
 		err = -ENOMEM;
+		goto err;
+	}
+
+	skb = iptunnel_handle_offloads(skb, udp_sum, type);
+	if (IS_ERR(skb)) {
+		err = -EINVAL;
 		goto err;
 	}
 
@@ -1798,10 +1798,6 @@ int vxlan_xmit_skb(struct rtable *rt, struct sk_buff *skb,
 		}
 	}
 
-	skb = iptunnel_handle_offloads(skb, udp_sum, type);
-	if (IS_ERR(skb))
-		return PTR_ERR(skb);
-
 	min_headroom = LL_RESERVED_SPACE(rt->dst.dev) + rt->dst.header_len
 			+ VXLAN_HLEN + sizeof(struct iphdr)
 			+ (skb_vlan_tag_present(skb) ? VLAN_HLEN : 0);
@@ -1816,6 +1812,10 @@ int vxlan_xmit_skb(struct rtable *rt, struct sk_buff *skb,
 	skb = vlan_hwaccel_push_inside(skb);
 	if (WARN_ON(!skb))
 		return -ENOMEM;
+
+	skb = iptunnel_handle_offloads(skb, udp_sum, type);
+	if (IS_ERR(skb))
+		return PTR_ERR(skb);
 
 	vxh = (struct vxlanhdr *) __skb_push(skb, sizeof(*vxh));
 	vxh->vx_flags = htonl(VXLAN_HF_VNI);

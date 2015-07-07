@@ -1933,7 +1933,8 @@ static int resize_stripes(struct r5conf *conf, int newsize)
 
 	conf->slab_cache = sc;
 	conf->active_name = 1-conf->active_name;
-	conf->pool_size = newsize;
+	if (!err)
+		conf->pool_size = newsize;
 	return err;
 }
 
@@ -5121,12 +5122,17 @@ static inline sector_t sync_request(struct mddev *mddev, sector_t sector_nr, int
 		schedule_timeout_uninterruptible(1);
 	}
 	/* Need to check if array will still be degraded after recovery/resync
-	 * We don't need to check the 'failed' flag as when that gets set,
-	 * recovery aborts.
+	 * Note in case of > 1 drive failures it's possible we're rebuilding
+	 * one drive while leaving another faulty drive in array.
 	 */
-	for (i = 0; i < conf->raid_disks; i++)
-		if (conf->disks[i].rdev == NULL)
+	rcu_read_lock();
+	for (i = 0; i < conf->raid_disks; i++) {
+		struct md_rdev *rdev = ACCESS_ONCE(conf->disks[i].rdev);
+
+		if (rdev == NULL || test_bit(Faulty, &rdev->flags))
 			still_degraded = 1;
+	}
+	rcu_read_unlock();
 
 	bitmap_start_sync(mddev->bitmap, sector_nr, &sync_blocks, still_degraded);
 

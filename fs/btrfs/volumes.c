@@ -4626,6 +4626,7 @@ int btrfs_alloc_chunk(struct btrfs_trans_handle *trans,
 {
 	u64 chunk_offset;
 
+	ASSERT(mutex_is_locked(&extent_root->fs_info->chunk_mutex));
 	chunk_offset = find_next_chunk(extent_root->fs_info);
 	return __btrfs_alloc_chunk(trans, extent_root, chunk_offset, type);
 }
@@ -4903,10 +4904,17 @@ static void sort_parity_stripes(struct btrfs_bio *bbio, int num_stripes)
 static struct btrfs_bio *alloc_btrfs_bio(int total_stripes, int real_stripes)
 {
 	struct btrfs_bio *bbio = kzalloc(
+		 /* the size of the btrfs_bio */
 		sizeof(struct btrfs_bio) +
+		/* plus the variable array for the stripes */
 		sizeof(struct btrfs_bio_stripe) * (total_stripes) +
+		/* plus the variable array for the tgt dev */
 		sizeof(int) * (real_stripes) +
-		sizeof(u64) * (real_stripes),
+		/*
+		 * plus the raid_map, which includes both the tgt dev
+		 * and the stripes
+		 */
+		sizeof(u64) * (total_stripes),
 		GFP_NOFS);
 	if (!bbio)
 		return NULL;

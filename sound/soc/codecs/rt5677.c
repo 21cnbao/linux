@@ -62,6 +62,9 @@ static const struct reg_default init_list[] = {
 	{RT5677_PR_BASE + 0x1e,	0x0000},
 	{RT5677_PR_BASE + 0x12,	0x0eaa},
 	{RT5677_PR_BASE + 0x14,	0x018a},
+	{RT5677_PR_BASE + 0x15,	0x0490},
+	{RT5677_PR_BASE + 0x38,	0x0f71},
+	{RT5677_PR_BASE + 0x39,	0x0f71},
 };
 #define RT5677_INIT_REG_LEN ARRAY_SIZE(init_list)
 
@@ -901,7 +904,7 @@ static int set_dmic_clk(struct snd_soc_dapm_widget *w,
 {
 	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
 	struct rt5677_priv *rt5677 = snd_soc_codec_get_drvdata(codec);
-	int idx = rl6231_calc_dmic_clk(rt5677->sysclk);
+	int idx = rl6231_calc_dmic_clk(rt5677->lrck[RT5677_AIF1] << 8);
 
 	if (idx < 0)
 		dev_err(codec->dev, "Failed to set DMIC clock\n");
@@ -3284,8 +3287,8 @@ static const struct snd_soc_dapm_route rt5677_dapm_routes[] = {
 	{ "IB45 Bypass Mux", "Bypass", "IB45 Mux" },
 	{ "IB45 Bypass Mux", "Pass SRC", "IB45 Mux" },
 
-	{ "IB6 Mux", "IF1 DAC 6", "IF1 DAC6" },
-	{ "IB6 Mux", "IF2 DAC 6", "IF2 DAC6" },
+	{ "IB6 Mux", "IF1 DAC 6", "IF1 DAC6 Mux" },
+	{ "IB6 Mux", "IF2 DAC 6", "IF2 DAC6 Mux" },
 	{ "IB6 Mux", "SLB DAC 6", "SLB DAC6" },
 	{ "IB6 Mux", "STO4 ADC MIX L", "Stereo4 ADC MIXL" },
 	{ "IB6 Mux", "IF4 DAC L", "IF4 DAC L" },
@@ -3293,8 +3296,8 @@ static const struct snd_soc_dapm_route rt5677_dapm_routes[] = {
 	{ "IB6 Mux", "STO2 ADC MIX L", "Stereo2 ADC MIXL" },
 	{ "IB6 Mux", "STO3 ADC MIX L", "Stereo3 ADC MIXL" },
 
-	{ "IB7 Mux", "IF1 DAC 7", "IF1 DAC7" },
-	{ "IB7 Mux", "IF2 DAC 7", "IF2 DAC7" },
+	{ "IB7 Mux", "IF1 DAC 7", "IF1 DAC7 Mux" },
+	{ "IB7 Mux", "IF2 DAC 7", "IF2 DAC7 Mux" },
 	{ "IB7 Mux", "SLB DAC 7", "SLB DAC7" },
 	{ "IB7 Mux", "STO4 ADC MIX R", "Stereo4 ADC MIXR" },
 	{ "IB7 Mux", "IF4 DAC R", "IF4 DAC R" },
@@ -3635,15 +3638,15 @@ static const struct snd_soc_dapm_route rt5677_dapm_routes[] = {
 	{ "DAC1 FS", NULL, "DAC1 MIXL" },
 	{ "DAC1 FS", NULL, "DAC1 MIXR" },
 
-	{ "DAC2 L Mux", "IF1 DAC 2", "IF1 DAC2" },
-	{ "DAC2 L Mux", "IF2 DAC 2", "IF2 DAC2" },
+	{ "DAC2 L Mux", "IF1 DAC 2", "IF1 DAC2 Mux" },
+	{ "DAC2 L Mux", "IF2 DAC 2", "IF2 DAC2 Mux" },
 	{ "DAC2 L Mux", "IF3 DAC L", "IF3 DAC L" },
 	{ "DAC2 L Mux", "IF4 DAC L", "IF4 DAC L" },
 	{ "DAC2 L Mux", "SLB DAC 2", "SLB DAC2" },
 	{ "DAC2 L Mux", "OB 2", "OutBound2" },
 
-	{ "DAC2 R Mux", "IF1 DAC 3", "IF1 DAC3" },
-	{ "DAC2 R Mux", "IF2 DAC 3", "IF2 DAC3" },
+	{ "DAC2 R Mux", "IF1 DAC 3", "IF1 DAC3 Mux" },
+	{ "DAC2 R Mux", "IF2 DAC 3", "IF2 DAC3 Mux" },
 	{ "DAC2 R Mux", "IF3 DAC R", "IF3 DAC R" },
 	{ "DAC2 R Mux", "IF4 DAC R", "IF4 DAC R" },
 	{ "DAC2 R Mux", "SLB DAC 3", "SLB DAC3" },
@@ -3651,29 +3654,29 @@ static const struct snd_soc_dapm_route rt5677_dapm_routes[] = {
 	{ "DAC2 R Mux", "Haptic Generator", "Haptic Generator" },
 	{ "DAC2 R Mux", "VAD ADC", "VAD ADC Mux" },
 
-	{ "DAC3 L Mux", "IF1 DAC 4", "IF1 DAC4" },
-	{ "DAC3 L Mux", "IF2 DAC 4", "IF2 DAC4" },
+	{ "DAC3 L Mux", "IF1 DAC 4", "IF1 DAC4 Mux" },
+	{ "DAC3 L Mux", "IF2 DAC 4", "IF2 DAC4 Mux" },
 	{ "DAC3 L Mux", "IF3 DAC L", "IF3 DAC L" },
 	{ "DAC3 L Mux", "IF4 DAC L", "IF4 DAC L" },
 	{ "DAC3 L Mux", "SLB DAC 4", "SLB DAC4" },
 	{ "DAC3 L Mux", "OB 4", "OutBound4" },
 
-	{ "DAC3 R Mux", "IF1 DAC 5", "IF1 DAC4" },
-	{ "DAC3 R Mux", "IF2 DAC 5", "IF2 DAC4" },
+	{ "DAC3 R Mux", "IF1 DAC 5", "IF1 DAC5 Mux" },
+	{ "DAC3 R Mux", "IF2 DAC 5", "IF2 DAC5 Mux" },
 	{ "DAC3 R Mux", "IF3 DAC R", "IF3 DAC R" },
 	{ "DAC3 R Mux", "IF4 DAC R", "IF4 DAC R" },
 	{ "DAC3 R Mux", "SLB DAC 5", "SLB DAC5" },
 	{ "DAC3 R Mux", "OB 5", "OutBound5" },
 
-	{ "DAC4 L Mux", "IF1 DAC 6", "IF1 DAC6" },
-	{ "DAC4 L Mux", "IF2 DAC 6", "IF2 DAC6" },
+	{ "DAC4 L Mux", "IF1 DAC 6", "IF1 DAC6 Mux" },
+	{ "DAC4 L Mux", "IF2 DAC 6", "IF2 DAC6 Mux" },
 	{ "DAC4 L Mux", "IF3 DAC L", "IF3 DAC L" },
 	{ "DAC4 L Mux", "IF4 DAC L", "IF4 DAC L" },
 	{ "DAC4 L Mux", "SLB DAC 6", "SLB DAC6" },
 	{ "DAC4 L Mux", "OB 6", "OutBound6" },
 
-	{ "DAC4 R Mux", "IF1 DAC 7", "IF1 DAC7" },
-	{ "DAC4 R Mux", "IF2 DAC 7", "IF2 DAC7" },
+	{ "DAC4 R Mux", "IF1 DAC 7", "IF1 DAC7 Mux" },
+	{ "DAC4 R Mux", "IF2 DAC 7", "IF2 DAC7 Mux" },
 	{ "DAC4 R Mux", "IF3 DAC R", "IF3 DAC R" },
 	{ "DAC4 R Mux", "IF4 DAC R", "IF4 DAC R" },
 	{ "DAC4 R Mux", "SLB DAC 7", "SLB DAC7" },

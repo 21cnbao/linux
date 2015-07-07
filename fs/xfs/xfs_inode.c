@@ -1889,21 +1889,17 @@ xfs_inactive(
 	/*
 	 * If there are attributes associated with the file then blow them away
 	 * now.  The code calls a routine that recursively deconstructs the
-	 * attribute fork.  We need to just commit the current transaction
-	 * because we can't use it for xfs_attr_inactive().
+	 * attribute fork. If also blows away the in-core attribute fork.
 	 */
-	if (ip->i_d.di_anextents > 0) {
-		ASSERT(ip->i_d.di_forkoff != 0);
-
+	if (XFS_IFORK_Q(ip)) {
 		error = xfs_attr_inactive(ip);
 		if (error)
 			return;
 	}
 
-	if (ip->i_afp)
-		xfs_idestroy_fork(ip, XFS_ATTR_FORK);
-
+	ASSERT(!ip->i_afp);
 	ASSERT(ip->i_d.di_anextents == 0);
+	ASSERT(ip->i_d.di_forkoff == 0);
 
 	/*
 	 * Free the inode.
@@ -2867,6 +2863,10 @@ xfs_rename(
 	 * Handle RENAME_EXCHANGE flags
 	 */
 	if (flags & RENAME_EXCHANGE) {
+		if (target_ip == NULL) {
+			error = -EINVAL;
+			goto error_return;
+		}
 		error = xfs_cross_rename(tp, src_dp, src_name, src_ip,
 					 target_dp, target_name, target_ip,
 					 &free_list, &first_block, spaceres);

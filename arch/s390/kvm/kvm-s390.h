@@ -128,7 +128,8 @@ static inline void kvm_s390_set_psw_cc(struct kvm_vcpu *vcpu, unsigned long cc)
 /* test availability of facility in a kvm intance */
 static inline int test_kvm_facility(struct kvm *kvm, unsigned long nr)
 {
-	return __test_facility(nr, kvm->arch.model.fac->kvm);
+	return __test_facility(nr, kvm->arch.model.fac->mask) &&
+		__test_facility(nr, kvm->arch.model.fac->list);
 }
 
 /* are cpu states controlled by user space */
@@ -150,8 +151,8 @@ int __must_check kvm_s390_inject_vcpu(struct kvm_vcpu *vcpu,
 int __must_check kvm_s390_inject_program_int(struct kvm_vcpu *vcpu, u16 code);
 struct kvm_s390_interrupt_info *kvm_s390_get_io_int(struct kvm *kvm,
 						    u64 cr6, u64 schid);
-void kvm_s390_reinject_io_int(struct kvm *kvm,
-			      struct kvm_s390_interrupt_info *inti);
+int kvm_s390_reinject_io_int(struct kvm *kvm,
+			     struct kvm_s390_interrupt_info *inti);
 int kvm_s390_mask_adapter(struct kvm *kvm, unsigned int id, bool masked);
 
 /* implemented in intercept.c */

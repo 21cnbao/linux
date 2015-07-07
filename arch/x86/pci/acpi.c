@@ -325,13 +325,33 @@ static void release_pci_root_info(struct pci_host_bridge *bridge)
 	kfree(info);
 }
 
+/*
+ * An IO port or MMIO resource assigned to a PCI host bridge may be
+ * consumed by the host bridge itself or available to its child
+ * bus/devices. The ACPI specification defines a bit (Producer/Consumer)
+ * to tell whether the resource is consumed by the host bridge itself,
+ * but firmware hasn't used that bit consistently, so we can't rely on it.
+ *
+ * On x86 and IA64 platforms, all IO port and MMIO resources are assumed
+ * to be available to child bus/devices except one special case:
+ *     IO port [0xCF8-0xCFF] is consumed by the host bridge itself
+ *     to access PCI configuration space.
+ *
+ * So explicitly filter out PCI CFG IO ports[0xCF8-0xCFF].
+ */
+static bool resource_is_pcicfg_ioport(struct resource *res)
+{
+	return (res->flags & IORESOURCE_IO) &&
+		res->start == 0xCF8 && res->end == 0xCFF;
+}
+
 static void probe_pci_root_info(struct pci_root_info *info,
 				struct acpi_device *device,
 				int busnum, int domain,
 				struct list_head *list)
 {
 	int ret;
-	struct resource_entry *entry;
+	struct resource_entry *entry, *tmp;
 
 	sprintf(info->name, "PCI Bus %04x:%02x", domain, busnum);
 	info->bridge = device;
@@ -345,8 +365,13 @@ static void probe_pci_root_info(struct pci_root_info *info,
 		dev_dbg(&device->dev,
 			"no IO and memory resources present in _CRS\n");
 	else
-		resource_list_for_each_entry(entry, list)
-			entry->res->name = info->name;
+		resource_list_for_each_entry_safe(entry, tmp, list) {
+			if ((entry->res->flags & IORESOURCE_DISABLED) ||
+			    resource_is_pcicfg_ioport(entry->res))
+				resource_list_destroy_entry(entry);
+			else
+				entry->res->name = info->name;
+		}
 }
 
 struct pci_bus *pci_acpi_scan_root(struct acpi_pci_root *root)

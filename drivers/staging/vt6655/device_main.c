@@ -330,16 +330,6 @@ static void device_init_registers(struct vnt_private *pDevice)
 	/* zonetype initial */
 	pDevice->byOriginalZonetype = pDevice->abyEEPROM[EEP_OFS_ZONETYPE];
 
-	/* Get RFType */
-	pDevice->byRFType = SROMbyReadEmbedded(pDevice->PortOffset, EEP_OFS_RFTYPE);
-
-	/* force change RevID for VT3253 emu */
-	if ((pDevice->byRFType & RF_EMU) != 0)
-			pDevice->byRevId = 0x80;
-
-	pDevice->byRFType &= RF_MASK;
-	pr_debug("pDevice->byRFType = %x\n", pDevice->byRFType);
-
 	if (!pDevice->bZoneRegExist)
 		pDevice->byZoneType = pDevice->abyEEPROM[EEP_OFS_ZONETYPE];
 
@@ -921,7 +911,11 @@ static int vnt_int_report_rate(struct vnt_private *priv,
 
 	if (!(tsr1 & TSR1_TERR)) {
 		info->status.rates[0].idx = idx;
-		info->flags |= IEEE80211_TX_STAT_ACK;
+
+		if (info->flags & IEEE80211_TX_CTL_NO_ACK)
+			info->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;
+		else
+			info->flags |= IEEE80211_TX_STAT_ACK;
 	}
 
 	return 0;
@@ -946,9 +940,6 @@ static int device_tx_srv(struct vnt_private *pDevice, unsigned int uIdx)
 		//Only the status of first TD in the chain is correct
 		if (pTD->m_td1TD1.byTCR & TCR_STP) {
 			if ((pTD->pTDInfo->byFlags & TD_FLAGS_NETIF_SKB) != 0) {
-
-				vnt_int_report_rate(pDevice, pTD->pTDInfo, byTsr0, byTsr1);
-
 				if (!(byTsr1 & TSR1_TERR)) {
 					if (byTsr0 != 0) {
 						pr_debug(" Tx[%d] OK but has error. tsr1[%02X] tsr0[%02X]\n",
@@ -967,6 +958,9 @@ static int device_tx_srv(struct vnt_private *pDevice, unsigned int uIdx)
 						 (int)uIdx, byTsr1, byTsr0);
 				}
 			}
+
+			vnt_int_report_rate(pDevice, pTD->pTDInfo, byTsr0, byTsr1);
+
 			device_free_tx_buf(pDevice, pTD);
 			pDevice->iTDUsed[uIdx]--;
 		}
@@ -998,10 +992,8 @@ static void device_free_tx_buf(struct vnt_private *pDevice, PSTxDesc pDesc)
 				 PCI_DMA_TODEVICE);
 	}
 
-	if (pTDInfo->byFlags & TD_FLAGS_NETIF_SKB)
+	if (skb)
 		ieee80211_tx_status_irqsafe(pDevice->hw, skb);
-	else
-		dev_kfree_skb_irq(skb);
 
 	pTDInfo->skb_dma = 0;
 	pTDInfo->skb = NULL;
@@ -1187,12 +1179,14 @@ static int vnt_tx_packet(struct vnt_private *priv, struct sk_buff *skb)
 {
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
 	PSTxDesc head_td;
-	u32 dma_idx = TYPE_AC0DMA;
+	u32 dma_idx;
 	unsigned long flags;
 
 	spin_lock_irqsave(&priv->lock, flags);
 
-	if (!ieee80211_is_data(hdr->frame_control))
+	if (ieee80211_is_data(hdr->frame_control))
+		dma_idx = TYPE_AC0DMA;
+	else
 		dma_idx = TYPE_TXDMA0;
 
 	if (AVAIL_TD(priv, dma_idx) < 1) {
@@ -1206,14 +1200,9 @@ static int vnt_tx_packet(struct vnt_private *priv, struct sk_buff *skb)
 
 	head_td->pTDInfo->skb = skb;
 
-	priv->iTDUsed[dma_idx]++;
+	if (dma_idx == TYPE_AC0DMA)
+		head_td->pTDInfo->byFlags = TD_FLAGS_NETIF_SKB;
 
-	/* Take ownership */
-	wmb();
-	head_td->m_td0TD0.f1Owner = OWNED_BY_NIC;
-
-	/* get Next */
-	wmb();
 	priv->apCurrTD[dma_idx] = head_td->next;
 
 	spin_unlock_irqrestore(&priv->lock, flags);
@@ -1234,13 +1223,17 @@ static int vnt_tx_packet(struct vnt_private *priv, struct sk_buff *skb)
 
 	head_td->buff_addr = cpu_to_le32(head_td->pTDInfo->skb_dma);
 
-	if (dma_idx == TYPE_AC0DMA) {
-		head_td->pTDInfo->byFlags = TD_FLAGS_NETIF_SKB;
+	/* Poll Transmit the adapter */
+	wmb();
+	head_td->m_td0TD0.f1Owner = OWNED_BY_NIC;
+	wmb(); /* second memory barrier */
 
+	if (head_td->pTDInfo->byFlags & TD_FLAGS_NETIF_SKB)
 		MACvTransmitAC0(priv->PortOffset);
-	} else {
+	else
 		MACvTransmit0(priv->PortOffset);
-	}
+
+	priv->iTDUsed[dma_idx]++;
 
 	spin_unlock_irqrestore(&priv->lock, flags);
 
@@ -1421,8 +1414,15 @@ static void vnt_bss_info_changed(struct ieee80211_hw *hw,
 
 	priv->current_aid = conf->aid;
 
-	if (changed & BSS_CHANGED_BSSID)
+	if (changed & BSS_CHANGED_BSSID) {
+		unsigned long flags;
+
+		spin_lock_irqsave(&priv->lock, flags);
+
 		MACvWriteBSSIDAddress(priv->PortOffset, (u8 *)conf->bssid);
+
+		spin_unlock_irqrestore(&priv->lock, flags);
+	}
 
 	if (changed & BSS_CHANGED_BASIC_RATES) {
 		priv->basic_rates = conf->basic_rates;
@@ -1777,6 +1777,12 @@ vt6655_probe(struct pci_dev *pcid, const struct pci_device_id *ent)
 	/* initial to reload eeprom */
 	MACvInitialize(priv->PortOffset);
 	MACvReadEtherAddress(priv->PortOffset, priv->abyCurrentNetAddr);
+
+	/* Get RFType */
+	priv->byRFType = SROMbyReadEmbedded(priv->PortOffset, EEP_OFS_RFTYPE);
+	priv->byRFType &= RF_MASK;
+
+	dev_dbg(&pcid->dev, "RF Type = %x\n", priv->byRFType);
 
 	device_get_options(priv);
 	device_set_options(priv);

@@ -91,7 +91,9 @@ extern unsigned long zero_page_mask;
  */
 #define PTRS_PER_PTE	256
 #ifndef CONFIG_64BIT
+#define __PAGETABLE_PUD_FOLDED
 #define PTRS_PER_PMD	1
+#define __PAGETABLE_PMD_FOLDED
 #define PTRS_PER_PUD	1
 #else /* CONFIG_64BIT */
 #define PTRS_PER_PMD	2048
@@ -598,7 +600,7 @@ static inline int pmd_large(pmd_t pmd)
 	return (pmd_val(pmd) & _SEGMENT_ENTRY_LARGE) != 0;
 }
 
-static inline int pmd_pfn(pmd_t pmd)
+static inline unsigned long pmd_pfn(pmd_t pmd)
 {
 	unsigned long origin_mask;
 

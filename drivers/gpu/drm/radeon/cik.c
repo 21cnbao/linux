@@ -3613,6 +3613,8 @@ static void cik_gpu_init(struct radeon_device *rdev)
 	}
 
 	WREG32(GRBM_CNTL, GRBM_READ_TIMEOUT(0xff));
+	WREG32(SRBM_INT_CNTL, 0x1);
+	WREG32(SRBM_INT_ACK, 0x1);
 
 	WREG32(BIF_FB_EN, FB_READ_EN | FB_WRITE_EN);
 
@@ -5802,7 +5804,7 @@ static int cik_pcie_gart_enable(struct radeon_device *rdev)
 	/* restore context1-15 */
 	/* set vm size, must be a multiple of 4 */
 	WREG32(VM_CONTEXT1_PAGE_TABLE_START_ADDR, 0);
-	WREG32(VM_CONTEXT1_PAGE_TABLE_END_ADDR, rdev->vm_manager.max_pfn);
+	WREG32(VM_CONTEXT1_PAGE_TABLE_END_ADDR, rdev->vm_manager.max_pfn - 1);
 	for (i = 1; i < 16; i++) {
 		if (i < 8)
 			WREG32(VM_CONTEXT0_PAGE_TABLE_BASE_ADDR + (i << 2),
@@ -7230,6 +7232,8 @@ static void cik_disable_interrupt_state(struct radeon_device *rdev)
 	WREG32(CP_ME2_PIPE3_INT_CNTL, 0);
 	/* grbm */
 	WREG32(GRBM_INT_CNTL, 0);
+	/* SRBM */
+	WREG32(SRBM_INT_CNTL, 0);
 	/* vline/vblank, etc. */
 	WREG32(LB_INTERRUPT_MASK + EVERGREEN_CRTC0_REGISTER_OFFSET, 0);
 	WREG32(LB_INTERRUPT_MASK + EVERGREEN_CRTC1_REGISTER_OFFSET, 0);
@@ -7550,6 +7554,9 @@ int cik_irq_set(struct radeon_device *rdev)
 	WREG32(DC_HPD4_INT_CONTROL, hpd4);
 	WREG32(DC_HPD5_INT_CONTROL, hpd5);
 	WREG32(DC_HPD6_INT_CONTROL, hpd6);
+
+	/* posting read */
+	RREG32(SRBM_STATUS);
 
 	return 0;
 }
@@ -8045,6 +8052,10 @@ restart_ih:
 				DRM_DEBUG("Unhandled interrupt: %d %d\n", src_id, src_data);
 				break;
 			}
+			break;
+		case 96:
+			DRM_ERROR("SRBM_READ_ERROR: 0x%x\n", RREG32(SRBM_READ_ERROR));
+			WREG32(SRBM_INT_ACK, 0x1);
 			break;
 		case 124: /* UVD */
 			DRM_DEBUG("IH: UVD int: 0x%08x\n", src_data);

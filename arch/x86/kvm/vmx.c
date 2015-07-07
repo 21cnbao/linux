@@ -2168,7 +2168,10 @@ static void vmx_set_msr_bitmap(struct kvm_vcpu *vcpu)
 {
 	unsigned long *msr_bitmap;
 
-	if (irqchip_in_kernel(vcpu->kvm) && apic_x2apic_mode(vcpu->arch.apic)) {
+	if (is_guest_mode(vcpu))
+		msr_bitmap = vmx_msr_bitmap_nested;
+	else if (irqchip_in_kernel(vcpu->kvm) &&
+		apic_x2apic_mode(vcpu->arch.apic)) {
 		if (is_long_mode(vcpu))
 			msr_bitmap = vmx_msr_bitmap_longmode_x2apic;
 		else
@@ -2476,8 +2479,7 @@ static void nested_vmx_setup_ctls_msrs(struct vcpu_vmx *vmx)
 	if (enable_ept) {
 		/* nested EPT: emulate EPT also to L1 */
 		vmx->nested.nested_vmx_secondary_ctls_high |=
-			SECONDARY_EXEC_ENABLE_EPT |
-			SECONDARY_EXEC_UNRESTRICTED_GUEST;
+			SECONDARY_EXEC_ENABLE_EPT;
 		vmx->nested.nested_vmx_ept_caps = VMX_EPT_PAGE_WALK_4_BIT |
 			 VMX_EPTP_WB_BIT | VMX_EPT_2MB_PAGE_BIT |
 			 VMX_EPT_INVEPT_BIT;
@@ -2490,6 +2492,10 @@ static void nested_vmx_setup_ctls_msrs(struct vcpu_vmx *vmx)
 		vmx->nested.nested_vmx_ept_caps |= VMX_EPT_EXTENT_GLOBAL_BIT;
 	} else
 		vmx->nested.nested_vmx_ept_caps = 0;
+
+	if (enable_unrestricted_guest)
+		vmx->nested.nested_vmx_secondary_ctls_high |=
+			SECONDARY_EXEC_UNRESTRICTED_GUEST;
 
 	/* miscellaneous data */
 	rdmsr(MSR_IA32_VMX_MISC,
@@ -3615,8 +3621,16 @@ static void vmx_set_cr3(struct kvm_vcpu *vcpu, unsigned long cr3)
 
 static int vmx_set_cr4(struct kvm_vcpu *vcpu, unsigned long cr4)
 {
-	unsigned long hw_cr4 = cr4 | (to_vmx(vcpu)->rmode.vm86_active ?
-		    KVM_RMODE_VM_CR4_ALWAYS_ON : KVM_PMODE_VM_CR4_ALWAYS_ON);
+	/*
+	 * Pass through host's Machine Check Enable value to hw_cr4, which
+	 * is in force while we are in guest mode.  Do not let guests control
+	 * this bit, even if host CR4.MCE == 0.
+	 */
+	unsigned long hw_cr4 =
+		(cr4_read_shadow() & X86_CR4_MCE) |
+		(cr4 & ~X86_CR4_MCE) |
+		(to_vmx(vcpu)->rmode.vm86_active ?
+		 KVM_RMODE_VM_CR4_ALWAYS_ON : KVM_PMODE_VM_CR4_ALWAYS_ON);
 
 	if (cr4 & X86_CR4_VMXE) {
 		/*
@@ -4367,6 +4381,18 @@ static int vmx_complete_nested_posted_interrupt(struct kvm_vcpu *vcpu)
 	return 0;
 }
 
+static inline bool kvm_vcpu_trigger_posted_interrupt(struct kvm_vcpu *vcpu)
+{
+#ifdef CONFIG_SMP
+	if (vcpu->mode == IN_GUEST_MODE) {
+		apic->send_IPI_mask(get_cpu_mask(vcpu->cpu),
+				POSTED_INTR_VECTOR);
+		return true;
+	}
+#endif
+	return false;
+}
+
 static int vmx_deliver_nested_posted_interrupt(struct kvm_vcpu *vcpu,
 						int vector)
 {
@@ -4375,9 +4401,7 @@ static int vmx_deliver_nested_posted_interrupt(struct kvm_vcpu *vcpu,
 	if (is_guest_mode(vcpu) &&
 	    vector == vmx->nested.posted_intr_nv) {
 		/* the PIR and ON have been set by L1. */
-		if (vcpu->mode == IN_GUEST_MODE)
-			apic->send_IPI_mask(get_cpu_mask(vcpu->cpu),
-				POSTED_INTR_VECTOR);
+		kvm_vcpu_trigger_posted_interrupt(vcpu);
 		/*
 		 * If a posted intr is not recognized by hardware,
 		 * we will accomplish it in the next vmentry.
@@ -4409,12 +4433,7 @@ static void vmx_deliver_posted_interrupt(struct kvm_vcpu *vcpu, int vector)
 
 	r = pi_test_and_set_on(&vmx->pi_desc);
 	kvm_make_request(KVM_REQ_EVENT, vcpu);
-#ifdef CONFIG_SMP
-	if (!r && (vcpu->mode == IN_GUEST_MODE))
-		apic->send_IPI_mask(get_cpu_mask(vcpu->cpu),
-				POSTED_INTR_VECTOR);
-	else
-#endif
+	if (r || !kvm_vcpu_trigger_posted_interrupt(vcpu))
 		kvm_vcpu_kick(vcpu);
 }
 
@@ -9213,9 +9232,9 @@ static void prepare_vmcs02(struct kvm_vcpu *vcpu, struct vmcs12 *vmcs12)
 	}
 
 	if (cpu_has_vmx_msr_bitmap() &&
-	    exec_control & CPU_BASED_USE_MSR_BITMAPS &&
-	    nested_vmx_merge_msr_bitmap(vcpu, vmcs12)) {
-		vmcs_write64(MSR_BITMAP, __pa(vmx_msr_bitmap_nested));
+	    exec_control & CPU_BASED_USE_MSR_BITMAPS) {
+		nested_vmx_merge_msr_bitmap(vcpu, vmcs12);
+		/* MSR_BITMAP will be set by following vmx_set_efer. */
 	} else
 		exec_control &= ~CPU_BASED_USE_MSR_BITMAPS;
 
@@ -10160,6 +10179,7 @@ static struct kvm_x86_ops vmx_x86_ops = {
 	.cache_reg = vmx_cache_reg,
 	.get_rflags = vmx_get_rflags,
 	.set_rflags = vmx_set_rflags,
+	.fpu_activate = vmx_fpu_activate,
 	.fpu_deactivate = vmx_fpu_deactivate,
 
 	.tlb_flush = vmx_flush_tlb,
