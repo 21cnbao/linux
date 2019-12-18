@@ -1,7 +1,9 @@
 export ARCH=arm
 export EXTRADIR=${PWD}/extra
 export CROSS_COMPILE=arm-linux-gnueabi-
-make LDDD3_vexpress_defconfig
+if [ ! -f ".config" ]; then
+	make LDDD3_vexpress_defconfig
+fi
 make zImage -j8
 make modules -j8
 make dtbs

@@ -2,7 +2,6 @@
 # Makefile for misc devices that really don't fit anywhere else.
 #
 
-obj-m		+= ldrex-strex-test.o 
 obj-$(CONFIG_HELLO)		+= hello.o
 obj-$(CONFIG_IBM_ASM)		+= ibmasm/
 obj-$(CONFIG_AD525X_DPOT)	+= ad525x_dpot.o
