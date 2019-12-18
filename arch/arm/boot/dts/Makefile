@@ -1,5 +1,9 @@
 ifeq ($(CONFIG_OF),y)
 
+dtb-$(CONFIG_MACH_DEMOSOOC) += \
+	linuxer-demosoc-evb.dtb
+
+
 dtb-$(CONFIG_MACH_ASM9260) += \
 	alphascale-asm9260-devkit.dtb
 # Keep at91 dtb files sorted alphabetically for each SoC

@@ -1,0 +1,9 @@
+menu "Linux DEMOSOC"
+	depends on ARCH_MULTI_V6 || ARCH_MULTI_V7
+
+config ARCH_DEMOSOC
+	bool "Linuxer demo soc(made by baohua)"
+	help
+          Support for Linuxer demo soc(made by baohua)
+
+endif
