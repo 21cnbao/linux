@@ -42,6 +42,19 @@ static int globalfifo_fasync(int fd, struct file *filp, int mode)
 static int globalfifo_open(struct inode *inode, struct file *filp)
 {
 	filp->private_data = globalfifo_devp;
+
+#if 0
+	int *p=0;
+	*p=100;
+#endif
+#if 0
+	char * tbuf = kmalloc(32,GFP_KERNEL);
+	if(tbuf)  {
+		memset(tbuf,0x00,32);
+		tbuf = kmalloc(32,GFP_KERNEL); //memory leak
+	}
+#endif
+
 	return 0;
 }
 
@@ -101,6 +114,21 @@ static ssize_t globalfifo_read(struct file *filp, char __user *buf,
 	struct globalfifo_dev *dev = filp->private_data;
 	DECLARE_WAITQUEUE(wait, current);
 
+#if 0
+	char * tbuf = kmalloc(32,GFP_KERNEL);
+	if(tbuf)  {
+		memset(tbuf,0x00,32);
+		kfree(tbuf);
+		printk("%s\n","free buf" );
+		kfree(tbuf);//重复释放内存
+	}
+#endif
+#if 0
+	/* do something bad */
+	int *p = NULL;
+	*p = 10;
+#endif
+
 	mutex_lock(&dev->mutex);
 	add_wait_queue(&dev->r_wait, &wait);
 
@@ -154,6 +182,13 @@ static ssize_t globalfifo_write(struct file *filp, const char __user *buf,
 
 	mutex_lock(&dev->mutex);
 	add_wait_queue(&dev->w_wait, &wait);
+#if 0
+	char * tbuf = kmalloc(32,GFP_KERNEL);
+	if(tbuf)  {
+		memset(tbuf,0x00,66); //overwrite
+		printk("%s\n","overwrite" );
+	}
+#endif
 
 	while (dev->current_len == GLOBALFIFO_SIZE) {
 		if (filp->f_flags & O_NONBLOCK) {

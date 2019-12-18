@@ -12,6 +12,7 @@
 #include <linux/cdev.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+#include <linux/delay.h>
 
 #define GLOBALMEM_SIZE	0x1000
 #define MEM_CLEAR 0x1
@@ -67,7 +68,15 @@ static ssize_t globalmem_read(struct file *filp, char __user * buf, size_t size,
 	unsigned int count = size;
 	int ret = 0;
 	struct globalmem_dev *dev = filp->private_data;
+#if 0 /* lockup example */
+	spinlock_t qlock;
 
+	spin_lock_init(&qlock);
+
+	spin_lock(&qlock);
+	mdelay(30000);
+	spin_unlock(&qlock);
+#endif
 	if (p >= GLOBALMEM_SIZE)
 		return 0;
 	if (count > GLOBALMEM_SIZE - p)
