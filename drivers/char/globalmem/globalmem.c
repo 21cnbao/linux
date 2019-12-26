@@ -79,6 +79,8 @@ static ssize_t globalmem_read(struct file *filp, char __user * buf, size_t size,
 #endif
 	if (p >= GLOBALMEM_SIZE)
 		return 0;
+
+	mutex_lock(&dev->mutex);
 	if (count > GLOBALMEM_SIZE - p)
 		count = GLOBALMEM_SIZE - p;
 
