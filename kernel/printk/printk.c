@@ -55,6 +55,8 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/printk.h>
 
+#include <linux/of.h>
+
 #include "printk_ringbuffer.h"
 #include "console_cmdline.h"
 #include "braille.h"
@@ -2417,6 +2419,13 @@ static int __init console_setup(char *str)
 	char buf[sizeof(console_cmdline[0].name) + 4]; /* 4 for "ttyS" */
 	char *s, *options, *brl_options = NULL;
 	int idx;
+
+	/*
+	 * for rk3568, uboot hardcoded some console info which is outdated
+	 * ignore the setting and use the default console
+	 */
+	if (of_machine_is_compatible("rockchip,rk3568"))
+		return 1;
 
 	/*
 	 * console="" or console=null have been suggested as a way to
