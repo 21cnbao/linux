@@ -1399,6 +1399,74 @@ void put_swap_folio(struct folio *folio, swp_entry_t entry)
 	unlock_cluster_or_swap_info(si, ci);
 }
 
+void clear_src_swpent(struct folio *src, int i)
+{
+	unsigned long offset;
+	struct address_space *mapping;
+
+	if (folio_can_split(src))
+		return;
+
+	if (!folio_test_anon(src) || !folio_test_swapcache(src))
+		return;
+
+	VM_WARN_ON_ONCE_FOLIO(!folio_test_large(src), src);
+	VM_WARN_ON_ONCE_FOLIO(folio_ref_count(src), src);
+
+	offset = swp_offset(src->swap);
+	mapping = swap_address_space(src->swap);
+
+	lockdep_assert_held(&mapping->i_pages.xa_lock);
+
+	__xa_store(&mapping->i_pages, offset + i, NULL, 0);
+	mapping->nrpages--;
+
+	__node_stat_mod_folio(src, NR_FILE_PAGES, -1);
+	__lruvec_stat_mod_folio(src, NR_SWAPCACHE, -1);
+}
+
+void free_src_swpents(struct folio *src)
+{
+	int i;
+	unsigned long offset;
+	struct swap_info_struct *si;
+	struct swap_cluster_info *ci;
+	int nr_pages = folio_nr_pages(src);
+
+	if (folio_can_split(src))
+		return;
+
+	if (!folio_test_anon(src) || !folio_test_swapcache(src))
+		return;
+
+	VM_WARN_ON_ONCE_FOLIO(!folio_test_large(src), src);
+	VM_WARN_ON_ONCE_FOLIO(!folio_test_locked(src), src);
+
+	si = _swap_info_get(src->swap);
+	if (!si)
+		return;
+
+	offset = swp_offset(src->swap);
+	ci = lock_cluster_or_swap_info(si, offset);
+
+	for (i = 0; i < nr_pages; i++) {
+		if (!__swap_entry_free_locked(si, offset + i, SWAP_HAS_CACHE))
+			set_src_usage(folio_page(src, i), SRC_PAGE_NOSWPENT);
+	}
+
+	unlock_cluster_or_swap_info(si, ci);
+
+	for (i = 0; i < nr_pages; i++) {
+		if (src_page_usage(folio_page(src, i)) & SRC_PAGE_NOSWPENT)
+			free_swap_slot(src->swap);
+
+		src->swap.val++;
+	}
+
+	src->swap.val = 0;
+	folio_clear_swapcache(src);
+}
+
 static int swp_entry_cmp(const void *ent1, const void *ent2)
 {
 	const swp_entry_t *e1 = ent1, *e2 = ent2;

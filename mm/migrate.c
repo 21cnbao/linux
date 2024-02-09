@@ -185,36 +185,52 @@ EXPORT_SYMBOL_GPL(putback_movable_pages);
 /*
  * Restore a potential migration pte to a working pte entry
  */
-static bool remove_migration_pte(struct folio *folio,
-		struct vm_area_struct *vma, unsigned long addr, void *old)
+static bool remove_migration_pte(struct folio *dst,
+		struct vm_area_struct *vma, unsigned long addr, void *arg)
 {
-	DEFINE_FOLIO_VMA_WALK(pvmw, old, vma, addr, PVMW_SYNC | PVMW_MIGRATION);
+	struct folio *src = arg;
+	DEFINE_FOLIO_VMA_WALK(pvmw, src, vma, addr, PVMW_SYNC | PVMW_MIGRATION);
 
 	while (page_vma_mapped_walk(&pvmw)) {
 		rmap_t rmap_flags = RMAP_NONE;
 		pte_t old_pte;
 		pte_t pte;
 		swp_entry_t entry;
-		struct page *new;
+		struct page *page;
+		struct folio *folio;
 		unsigned long idx = 0;
 
 		/* pgoff is invalid for ksm pages, but they are never large */
-		if (folio_test_large(folio) && !folio_test_hugetlb(folio))
+		if (folio_test_large(dst) && !folio_test_hugetlb(dst))
 			idx = linear_page_index(vma, pvmw.address) - pvmw.pgoff;
-		new = folio_page(folio, idx);
+		page = folio_page(dst, idx);
+
+		if (src == dst) {
+			if (can_discard_src(page)) {
+				VM_WARN_ON_ONCE_FOLIO(!folio_test_anon(src), src);
+
+				pte_clear_not_present_full(pvmw.vma->vm_mm, pvmw.address,
+							   pvmw.pte, false);
+				dec_mm_counter(pvmw.vma->vm_mm, MM_ANONPAGES);
+				continue;
+			}
+			page = folio_dst_page(src, idx);
+		}
+
+		folio = page_folio(page);
 
 #ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
 		/* PMD-mapped THP migration entry */
 		if (!pvmw.pte) {
 			VM_BUG_ON_FOLIO(folio_test_hugetlb(folio) ||
 					!folio_test_pmd_mappable(folio), folio);
-			remove_migration_pmd(&pvmw, new);
+			remove_migration_pmd(&pvmw, page);
 			continue;
 		}
 #endif
 
 		folio_get(folio);
-		pte = mk_pte(new, READ_ONCE(vma->vm_page_prot));
+		pte = mk_pte(page, READ_ONCE(vma->vm_page_prot));
 		old_pte = ptep_get(pvmw.pte);
 		if (pte_swp_soft_dirty(old_pte))
 			pte = pte_mksoft_dirty(pte);
@@ -232,13 +248,13 @@ static bool remove_migration_pte(struct folio *folio,
 		if (folio_test_anon(folio) && !is_readable_migration_entry(entry))
 			rmap_flags |= RMAP_EXCLUSIVE;
 
-		if (unlikely(is_device_private_page(new))) {
+		if (unlikely(is_device_private_page(page))) {
 			if (pte_write(pte))
 				entry = make_writable_device_private_entry(
-							page_to_pfn(new));
+							page_to_pfn(page));
 			else
 				entry = make_readable_device_private_entry(
-							page_to_pfn(new));
+							page_to_pfn(page));
 			pte = swp_entry_to_pte(entry);
 			if (pte_swp_soft_dirty(old_pte))
 				pte = pte_swp_mksoft_dirty(pte);
@@ -264,17 +280,17 @@ static bool remove_migration_pte(struct folio *folio,
 #endif
 		{
 			if (folio_test_anon(folio))
-				folio_add_anon_rmap_pte(folio, new, vma,
+				folio_add_anon_rmap_pte(folio, page, vma,
 							pvmw.address, rmap_flags);
 			else
-				folio_add_file_rmap_pte(folio, new, vma);
+				folio_add_file_rmap_pte(folio, page, vma);
 			set_pte_at(vma->vm_mm, pvmw.address, pvmw.pte, pte);
 		}
 		if (vma->vm_flags & VM_LOCKED)
 			mlock_drain_local();
 
 		trace_remove_migration_pte(pvmw.address, pte_val(pte),
-					   compound_order(new));
+					   compound_order(page));
 
 		/* No need to invalidate - it was non-present before */
 		update_mmu_cache(vma, pvmw.address, pvmw.pte);

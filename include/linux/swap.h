@@ -514,6 +514,8 @@ static inline void put_swap_device(struct swap_info_struct *si)
 	percpu_ref_put(&si->users);
 }
 
+extern void clear_src_swpent(struct folio *src, int i);
+extern void free_src_swpents(struct folio *src);
 #else /* CONFIG_SWAP */
 static inline struct swap_info_struct *swp_swap_info(swp_entry_t entry)
 {
@@ -610,6 +612,14 @@ static inline int add_swap_extent(struct swap_info_struct *sis,
 				  unsigned long nr_pages, sector_t start_block)
 {
 	return -EINVAL;
+}
+
+static inline void clear_src_swpent(struct folio *src, int i)
+{
+}
+
+static inline void free_src_swpents(struct folio *src)
+{
 }
 #endif /* CONFIG_SWAP */
 
